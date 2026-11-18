@@ -6,13 +6,13 @@
   <meta name="theme-color" content="#10131d">
   <title>Mohammed Trading AI</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="top">
     <div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div>
     <span class="pill"><i></i> وضع تجريبي</span>
   </header>
-
   <main>
     <section class="intro">
       <div><p class="eyebrow">لوحة التحكم الرئيسية</p><h1>مرحباً بك</h1><p class="muted">مركز متابعة السوق والاستراتيجية وإدارة المخاطر.</p></div>
@@ -20,39 +20,41 @@
     </section>
 
     <section class="notice">
-      <strong>نسخة أولية — لا تنفّذ صفقات حقيقية</strong>
-      <p>هذه الواجهة حالياً نموذج عرض فقط. لم يتم ربط Binance أو تشغيل محرك تداول أو إرسال أوامر شراء وبيع.</p>
+      <strong>اتصال بيانات السوق فقط — لا يوجد تنفيذ صفقات</strong>
+      <p>الأسعار والشموع تُجلب من Binance Spot باستخدام واجهة البيانات العامة. لا توجد مفاتيح API ولا صلاحية تداول أو سحب.</p>
     </section>
 
     <section class="stats">
-      <article class="card"><span>رأس المال التجريبي</span><strong>$50.00</strong><small>قيمة إعداد مبدئية</small></article>
-      <article class="card"><span>الأرباح / الخسائر</span><strong class="neutral">—</strong><small>بانتظار ربط البيانات</small></article>
-      <article class="card"><span>الصفقات المفتوحة</span><strong>0</strong><small>لا توجد صفقات</small></article>
-      <article class="card"><span>حالة النظام</span><strong class="warn">غير متصل</strong><small>لم يتم ربط محرك التداول</small></article>
+      <article class="card"><span>رأس المال التجريبي</span><strong>$50.00</strong><small>قيمة إعداد مبدئية وليست رصيد Binance</small></article>
+      <article class="card"><span>الأرباح / الخسائر</span><strong class="neutral">—</strong><small>لا توجد صفقات مسجلة</small></article>
+      <article class="card"><span>الصفقات المفتوحة</span><strong>0</strong><small>وضع مراقبة فقط</small></article>
+      <article class="card"><span>حالة اتصال السوق</span><strong id="connection" class="warn">جارٍ الاتصال</strong><small id="updated">بانتظار أول تحديث</small></article>
     </section>
 
-    <section class="grid">
-      <article class="panel">
-        <div class="panel-head"><div><h2>مراقبة العملات</h2><p class="muted">قائمة مبدئية — الأسعار غير متصلة</p></div><span class="tag">Spot</span></div>
-        <div class="coin"><b>BTC</b><span>Bitcoin</span><em>بانتظار البيانات</em></div>
-        <div class="coin"><b>ETH</b><span>Ethereum</span><em>بانتظار البيانات</em></div>
-        <div class="coin"><b>SOL</b><span>Solana</span><em>بانتظار البيانات</em></div>
-      </article>
-      <article class="panel">
-        <div class="panel-head"><div><h2>حالة الاستراتيجية</h2><p class="muted">Trend Following · 4H</p></div></div>
-        <div class="strategy-row"><span>EMA 20 / 50 / 200</span><b>غير مفعّل</b></div>
-        <div class="strategy-row"><span>RSI 14</span><b>غير مفعّل</b></div>
-        <div class="strategy-row"><span>حجم التداول</span><b>غير مفعّل</b></div>
-        <div class="strategy-row"><span>وقف الخسارة</span><b>غير مفعّل</b></div>
-      </article>
+    <section class="panel market">
+      <div class="panel-head"><div><h2>مراقبة العملات</h2><p class="muted">Binance Spot · الأسعار مقابل USDT</p></div><span class="tag">تحديث كل 60 ثانية</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>العملة</th><th>السعر</th><th>تغير 24 ساعة</th><th>أعلى 24 ساعة</th><th>أدنى 24 ساعة</th></tr></thead>
+          <tbody id="marketRows"><tr><td colspan="5" class="loading">جارٍ تحميل بيانات السوق...</td></tr></tbody>
+        </table>
+      </div>
+      <p id="marketError" class="error" hidden></p>
     </section>
 
     <section class="panel history">
-      <div class="panel-head"><div><h2>آخر النشاطات</h2><p class="muted">سجل النظام</p></div></div>
-      <div class="empty">لا توجد نشاطات حتى الآن</div>
+      <div class="panel-head"><div><h2>شموع الأربع ساعات</h2><p class="muted">آخر شمعة لكل عملة — بيانات OHLCV</p></div><span class="tag">4H</span></div>
+      <div id="candleRows" class="candle-list"><div class="loading">بانتظار البيانات...</div></div>
     </section>
 
-    <footer>Mohammed Trading AI <span>نسخة تجريبية أولية</span></footer>
+    <section class="panel">
+      <div class="panel-head"><div><h2>حالة الاستراتيجية</h2><p class="muted">لم يتم تفعيل التحليل الفني بعد</p></div></div>
+      <div class="strategy-row"><span>EMA 20 / 50 / 200</span><b>المرحلة التالية</b></div>
+      <div class="strategy-row"><span>RSI 14</span><b>المرحلة التالية</b></div>
+      <div class="strategy-row"><span>إشارات الدخول والخروج</span><b>غير مفعّلة</b></div>
+      <div class="strategy-row"><span>تنفيذ أوامر شراء وبيع</span><b>معطّل</b></div>
+    </section>
+    <footer>Mohammed Trading AI <span>بيانات عامة من Binance · ليست توصية استثمارية</span></footer>
   </main>
 </body>
 </html>

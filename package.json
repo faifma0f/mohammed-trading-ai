@@ -1,12 +1,8 @@
 {
   "name": "mohammed-trading-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Mohammed Trading AI dashboard prototype",
-  "scripts": {
-    "start": "node server.js"
-  },
-  "engines": {
-    "node": ">=18"
-  }
+  "description": "Mohammed Trading AI dashboard with public Binance market data",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
 }
