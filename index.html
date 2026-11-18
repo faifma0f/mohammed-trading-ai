@@ -1,60 +1,24 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#10131d">
-  <title>Mohammed Trading AI</title>
-  <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#10131d">
+<title>Mohammed Trading AI</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
 </head>
 <body>
-  <header class="top">
-    <div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div>
-    <span class="pill"><i></i> وضع تجريبي</span>
-  </header>
-  <main>
-    <section class="intro">
-      <div><p class="eyebrow">لوحة التحكم الرئيسية</p><h1>مرحباً بك</h1><p class="muted">مركز متابعة السوق والاستراتيجية وإدارة المخاطر.</p></div>
-      <div class="timeframe"><span>الإطار الزمني</span><strong>4 ساعات</strong></div>
-    </section>
-
-    <section class="notice">
-      <strong>اتصال بيانات السوق فقط — لا يوجد تنفيذ صفقات</strong>
-      <p>الأسعار والشموع تُجلب من Binance Spot باستخدام واجهة البيانات العامة. لا توجد مفاتيح API ولا صلاحية تداول أو سحب.</p>
-    </section>
-
-    <section class="stats">
-      <article class="card"><span>رأس المال التجريبي</span><strong>$50.00</strong><small>قيمة إعداد مبدئية وليست رصيد Binance</small></article>
-      <article class="card"><span>الأرباح / الخسائر</span><strong class="neutral">—</strong><small>لا توجد صفقات مسجلة</small></article>
-      <article class="card"><span>الصفقات المفتوحة</span><strong>0</strong><small>وضع مراقبة فقط</small></article>
-      <article class="card"><span>حالة اتصال السوق</span><strong id="connection" class="warn">جارٍ الاتصال</strong><small id="updated">بانتظار أول تحديث</small></article>
-    </section>
-
-    <section class="panel market">
-      <div class="panel-head"><div><h2>مراقبة العملات</h2><p class="muted">Binance Spot · الأسعار مقابل USDT</p></div><span class="tag">تحديث كل 60 ثانية</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>العملة</th><th>السعر</th><th>تغير 24 ساعة</th><th>أعلى 24 ساعة</th><th>أدنى 24 ساعة</th></tr></thead>
-          <tbody id="marketRows"><tr><td colspan="5" class="loading">جارٍ تحميل بيانات السوق...</td></tr></tbody>
-        </table>
-      </div>
-      <p id="marketError" class="error" hidden></p>
-    </section>
-
-    <section class="panel history">
-      <div class="panel-head"><div><h2>شموع الأربع ساعات</h2><p class="muted">آخر شمعة لكل عملة — بيانات OHLCV</p></div><span class="tag">4H</span></div>
-      <div id="candleRows" class="candle-list"><div class="loading">بانتظار البيانات...</div></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-head"><div><h2>حالة الاستراتيجية</h2><p class="muted">لم يتم تفعيل التحليل الفني بعد</p></div></div>
-      <div class="strategy-row"><span>EMA 20 / 50 / 200</span><b>المرحلة التالية</b></div>
-      <div class="strategy-row"><span>RSI 14</span><b>المرحلة التالية</b></div>
-      <div class="strategy-row"><span>إشارات الدخول والخروج</span><b>غير مفعّلة</b></div>
-      <div class="strategy-row"><span>تنفيذ أوامر شراء وبيع</span><b>معطّل</b></div>
-    </section>
-    <footer>Mohammed Trading AI <span>بيانات عامة من Binance · ليست توصية استثمارية</span></footer>
-  </main>
-</body>
-</html>
+<header class="top"><div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div><span class="pill"><i></i> تداول تجريبي فقط</span></header>
+<main>
+<section class="intro"><div><p class="eyebrow">محرك الاستراتيجية</p><h1>متعدد الفريمات</h1><p class="muted">15 دقيقة للاتجاه · 5 دقائق للتأكيد · 3 دقائق لتوقيت الدخول</p></div><div class="timeframe"><span>رأس المال التجريبي</span><strong>$50</strong></div></section>
+<section class="notice"><strong>محاكاة وتحليل فقط — لا يتم إرسال أوامر إلى Binance</strong><p>بيانات السوق عامة. لا توجد مفاتيح API أو صلاحية تداول أو سحب. إشارة الشراء ليست ضماناً للربح، ويجب اختبار النتائج قبل أي استخدام بأموال حقيقية.</p></section>
+<section class="stats">
+<article class="card"><span>حد المخاطرة للصفقة</span><strong>$0.50</strong><small>1% من رأس المال التجريبي</small></article>
+<article class="card"><span>حالة اتصال السوق</span><strong id="connection" class="warn">جارٍ الاتصال</strong><small id="updated">بانتظار التحديث</small></article>
+<article class="card"><span>الصفقات المنفذة</span><strong>0</strong><small>لا يوجد تنفيذ حقيقي</small></article>
+<article class="card"><span>وضع النظام</span><strong class="safe">Paper</strong><small>مراقبة وإشارات فقط</small></article>
+</section>
+<section class="panel"><div class="panel-head"><div><h2>مراقبة السوق</h2><p class="muted">Binance Spot · مقابل USDT</p></div><span class="tag">تحديث كل 60 ثانية</span></div>
+<div class="table-wrap"><table><thead><tr><th>العملة</th><th>السعر</th><th>تغير 24h</th><th>الإشارة</th></tr></thead><tbody id="marketRows"><tr><td colspan="4" class="loading">جارٍ تحميل البيانات...</td></tr></tbody></table></div><p id="error" class="error" hidden></p></section>
+<section class="panel"><div class="panel-head"><div><h2>تحليل الفريمات</h2><p class="muted">EMA + RSI · آخر شموع مغلقة</p></div></div><div id="analysisCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
+<section class="panel"><div class="panel-head"><div><h2>إدارة المخاطر — لكل إشارة شراء</h2><p class="muted">وقف خسارة مبني على ATR لفريم 3 دقائق، وهدف نظري 2R</p></div></div><div id="riskCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
+<footer>Mohammed Trading AI <span>نسخة تجريبية · لا تنفذ صفقات</span></footer>
+</main>
+</body></html>

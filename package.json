@@ -1,8 +1,12 @@
 {
   "name": "mohammed-trading-ai",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
-  "description": "Mohammed Trading AI dashboard with public Binance market data",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" }
+  "description": "Multi-timeframe paper-trading analysis dashboard",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
