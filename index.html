@@ -20,7 +20,7 @@
   <main class="container">
     <section class="hero panel">
       <div>
-        <p class="eyebrow">PAPER TRADING · V5.4</p>
+        <p class="eyebrow">PAPER TRADING · V6</p>
         <h2>مراقبة السوق وإشارات الاستراتيجية</h2>
         <p class="muted">بيانات عامة من Binance Spot — لا يتم إرسال أوامر حقيقية.</p>
       </div>
@@ -44,7 +44,7 @@
         <div><p class="eyebrow">LIVE MARKET</p><h2>أفضل 10 أزواج USDT</h2></div>
         <span id="marketStatus" class="status">بانتظار البيانات</span>
       </div>
-      <p class="muted small">يتم اختيار الأزواج ديناميكياً حسب حجم التداول اليومي، مع استبعاد العملات المستقرة.</p>
+      <p class="muted small">يتم تحديث أفضل 10 أزواج USDT كل 4 ساعات حسب حجم التداول، مع فلتر السيولة والسبريد.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>الزوج</th><th>السعر</th><th>التغير 24h</th><th>حجم USDT</th><th>إشارة الاستراتيجية</th><th>سبب الإشارة</th></tr></thead>
@@ -56,7 +56,7 @@
     <section class="panel section">
       <div class="section-heading">
         <div><p class="eyebrow">PAPER POSITIONS</p><h2>المراكز المفتوحة</h2></div>
-        <span class="muted small">حد المخاطرة الاسمي: $0.50 لكل صفقة</span>
+        <span class="muted small">وقف الخسارة: 10% من مبلغ الصفقة ($0.50)</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -81,9 +81,9 @@
     <section class="panel section" id="backtest">
       <div class="section-heading">
         <div><p class="eyebrow">HISTORICAL TEST</p><h2>اختبار الاستراتيجية التاريخي</h2></div>
-        <span class="status">10,000 شمعة لكل فريم</span>
+        <span class="status">بيانات سنة كاملة · 4 فريمات</span>
       </div>
-      <p class="muted">إدارة الصفقة الأساسية: دخول 5 دولارات، وقف -0.7%، بيع نصف الكمية عند +0.8% ثم نقل وقف النصف المتبقي إلى سعر الدخول، وبيع الباقي عند +1.5%. يقارن الاختبار هذا الإعداد بإعداد بديل +1%/+2% على مدد 30 و60 و120 دقيقة.</p>
+      <p class="muted">الاستراتيجية V6: أربعة فريمات (1H، 15m، 5m، 3m)، دمج EMA وMACD وRSI وATR مع النماذج السعرية (الاختراق، استعادة EMA20، الابتلاع الشرائي) والحجم النسبي والسيولة. الدخول عند درجة 75/100 أو أكثر. إدارة الصفقة: دخول 5 دولارات، وقف -10% من مبلغ الصفقة، TP1 +20% من مبلغ الصفقة (بيع النصف)، ثم نقل وقف المتبقي للدخول، وTP2 +30% من مبلغ الصفقة لتصفية المتبقي. النسب محسوبة من مبلغ الدخول الأصلي لا من سعر العملة.</p>
       <div class="backtest-controls">
         <label for="symbolSelect">زوج الاختبار</label>
         <select id="symbolSelect">
@@ -91,7 +91,7 @@
           <option value="ETHUSDT">ETH / USDT</option>
           <option value="SOLUSDT">SOL / USDT</option>
         </select>
-        <button id="backtestBtn" class="btn btn-primary">تشغيل المقارنة</button>
+        <button id="backtestBtn" class="btn btn-primary">تشغيل اختبار سنة</button>
       </div>
       <div id="backtestStatus" class="muted small" aria-live="polite">اختر زوجاً ثم شغّل الاختبار.</div>
       <div id="backtestSummary" class="comparison-grid"></div>

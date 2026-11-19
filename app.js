@@ -112,10 +112,35 @@ function renderComparisons(data) {
   $('limitations').innerHTML = `<strong>حدود الاختبار:</strong><ul>${(data.limitations || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
   $('limitations').classList.remove('hidden');
 }
+
+function renderV6Backtest(data) {
+  const metrics = [
+    ['عدد الصفقات', data.trades], ['نسبة الفوز', pct(data.winRate)],
+    ['Profit Factor', data.profitFactor == null ? '—' : Number(data.profitFactor).toFixed(2)],
+    ['صافي الربح بعد التكاليف', money(data.netPnl)], ['Expectancy', money(data.expectancy)],
+    ['Max Drawdown', pct(data.maxDrawdownPercent)], ['TP1', data.tp1Hits],
+    ['TP2', data.tp2Exits], ['وقف الخسارة', data.stopExits],
+    ['تعادل بعد TP1', data.breakevenExits], ['إجمالي الرسوم', money(data.totalFees)],
+    ['متوسط مدة الصفقة', `${Number(data.avgHoldingHours || 0).toFixed(1)} ساعة`]
+  ];
+  $('backtestSummary').innerHTML = `<article class="result-card">
+    <div class="result-title">نتيجة الاختبار السنوي · ${esc(data.symbol)}</div>
+    <div class="result-main ${Number(data.netPnl)>=0?'positive':'negative'}">${money(data.netPnl)}</div>
+    <div class="result-metrics">${metrics.map(([k,v])=>`<span>${k}<b>${v}</b></span>`).join('')}</div>
+  </article>`;
+  const c=data.candleCounts||{}, d=data.diagnostics||{};
+  $('diagnostics').innerHTML = `<h3>بيانات الاختبار والتشخيص</h3>
+    <p>الشموع: 1H (${c['1h']||0}) · 15m (${c['15m']||0}) · 5m (${c['5m']||0}) · 3m (${c['3m']||0})</p>
+    <p>إشارات مرشحة: ${d.candidateSignals??0} · رفض اتجاه 1H: ${d.rejected?.trend1h??0} · رفض 15m: ${d.rejected?.trend15m??0} · رفض النقاط/السيولة: ${d.rejected?.score??0}</p>
+    <p>الفترة: ${fmtTime(data.period?.start)} — ${fmtTime(data.period?.end)}</p>`;
+  $('limitations').innerHTML = `<strong>حدود الاختبار:</strong><ul>${(data.limitations||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  $('limitations').classList.remove('hidden');
+}
+
 async function runBacktest() {
   const symbol = $('symbolSelect').value;
   $('backtestBtn').disabled = true;
-  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم، ومقارنة هدفَي 0.8%/1.5% و1%/2% مع وقف -0.7%. قد يستغرق ذلك بعض الوقت…`;
+  $('backtestStatus').textContent = `جاري تحميل بيانات سنة كاملة للفريمات الأربعة وتحليل المؤشرات والنماذج والسيولة. قد يستغرق عدة دقائق…`;
   $('backtestSummary').innerHTML = '';
   $('diagnostics').innerHTML = '';
   $('limitations').classList.add('hidden');
@@ -123,11 +148,11 @@ async function runBacktest() {
     const r = await fetch(`/api/backtest?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || data.error || 'فشل الاختبار');
-    if (data.version !== 'V5.4' || !Array.isArray(data.comparisons)) {
-      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر ملفات V5.4 الأربعة في Railway.');
+    if (data.version !== 'V6' || !Number.isFinite(Number(data.netPnl))) {
+      throw new Error('استجابة الخادم غير متوافقة. تأكد من نشر ملفات V6 الأربعة.');
     }
-    renderComparisons(data);
-    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · دخول $5 · وقف -0.7% · TP1 +0.8% (بيع النصف وتحريك الوقف للدخول) · TP2 +1.5% · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة`;
+    renderV6Backtest(data);
+    $('backtestStatus').textContent = `اكتمل اختبار سنة: ${symbol} · ${data.trades} صفقة · صافي ${money(data.netPnl)} بعد الرسوم والانزلاق.`;
   } catch (e) {
     $('backtestStatus').textContent = `تعذر الاختبار: ${e.message}`;
   } finally {
