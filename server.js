@@ -6,7 +6,10 @@ const ROOT = __dirname;
 const PORT = process.env.PORT || 8080;
 const BINANCE = 'https://data-api.binance.vision';
 const CAPITAL = 50;
-const RISK_PER_TRADE = 0.50;
+const ALLOCATION_PER_TRADE = CAPITAL * 0.10; // $5 لكل صفقة
+const STOP_LOSS_PCT = 0.20;                  // -20% من سعر الدخول
+const TAKE_PROFIT_1_PCT = 0.10;               // +10%: بيع نصف الكمية
+const TAKE_PROFIT_2_PCT = 0.30;               // +30%: بيع النصف المتبقي
 const MAX_OPEN_POSITIONS = 3;
 const MAX_SYMBOLS = 10;
 const FEE_RATE = 0.001;       // تقدير 0.10% لكل تنفيذ؛ عدّله حسب فئة رسوم حسابك
@@ -138,11 +141,14 @@ function signal(a1h, a15, a5, a3, price) {
       rsi1h: a1h.rsi14, rsi15: a15.rsi14, rsi5: a5.rsi14, rsi3: a3.rsi14
     },
     risk: {
-      maxLossUsd: RISK_PER_TRADE, stopPrice: stop,
-      targetPrice: price + 2 * distance,
-      quantityBase: distance > 0 ? RISK_PER_TRADE / distance : null,
-      notionalUsd: distance > 0 ? RISK_PER_TRADE / distance * price : null,
-      riskReward: '1:2'
+      allocationUsd: ALLOCATION_PER_TRADE,
+      stopPrice: price * (1 - STOP_LOSS_PCT),
+      target1Price: price * (1 + TAKE_PROFIT_1_PCT),
+      target2Price: price * (1 + TAKE_PROFIT_2_PCT),
+      estimatedLossUsd: ALLOCATION_PER_TRADE * STOP_LOSS_PCT,
+      quantityBase: price > 0 ? ALLOCATION_PER_TRADE / price : null,
+      notionalUsd: ALLOCATION_PER_TRADE,
+      management: 'TP1 +10% sell half, move remaining stop to entry; TP2 +30%'
     },
     candleTimes: { h1: a1h.candleTime, m15: a15.candleTime, m5: a5.candleTime, m3: a3.candleTime }
   };
@@ -181,41 +187,69 @@ async function getAsset(symbol) {
 }
 function executePaper(assets) {
   const now = Date.now();
-  for (const p of [...state.positions]) {
-    const a = assets.find(x => x.symbol === p.symbol);
-    if (!a) continue;
-    p.markPrice = a.price;
-    let exit = null;
-    if (a.price <= p.stopPrice) exit = { price: p.stopPrice, reason: 'وقف الخسارة' };
-    else if (a.price >= p.targetPrice) exit = { price: p.targetPrice, reason: 'تحقق الهدف' };
-    if (exit) closePosition(p, exit.price, exit.reason, now);
+
+  // Manage existing positions first: stop, TP1 (half + move stop to entry), then TP2.
+  for (const pos of [...state.positions]) {
+    const asset = assets.find(a => a.symbol === pos.symbol);
+    if (!asset) continue;
+    const price = asset.price;
+    pos.markPrice = price;
+
+    if (price <= pos.stopPrice) {
+      closePosition(pos, pos.stopPrice, pos.partialTaken ? 'وقف التعادل بعد TP1' : 'وقف خسارة -20%', now);
+      continue;
+    }
+
+    if (!pos.partialTaken && price >= pos.target1Price) {
+      closePosition(pos, pos.target1Price, 'TP1 +10% (بيع نصف الكمية)', now, 0.5);
+      const remaining = state.positions.find(p => p.id === pos.id);
+      if (remaining) {
+        remaining.partialTaken = true;
+        remaining.stopPrice = remaining.entryPrice;
+        remaining.markPrice = price;
+      }
+    }
+
+    const remaining = state.positions.find(p => p.id === pos.id);
+    if (remaining && remaining.partialTaken && price <= remaining.stopPrice) {
+      closePosition(remaining, remaining.stopPrice, 'وقف التعادل بعد TP1', now);
+      continue;
+    }
+    if (remaining && remaining.partialTaken && price >= remaining.target2Price) {
+      closePosition(remaining, remaining.target2Price, 'TP2 +30% (بيع المتبقي)', now);
+    }
   }
-  for (const a of assets) {
+
+  // New positions: 10% of initial $50 = $5 each, maximum three at once.
+  for (const asset of assets) {
     if (state.positions.length >= MAX_OPEN_POSITIONS) break;
-    if (a.signal.status !== 'BUY') continue;
-    if (state.positions.some(p => p.symbol === a.symbol)) continue;
-    const candle = a.signal.candleTimes?.m3;
-    if (!candle || state.lastEntry[a.symbol] === candle) continue;
-    const stop = a.signal.risk?.stopPrice;
-    const distance = a.price - stop;
-    if (!(distance > 0)) continue;
-    const riskPerUnit = (entryPrice - stop) + entryPrice * FEE_RATE + stop * (FEE_RATE + SLIPPAGE_RATE);
-    const qtyByRisk = RISK_PER_TRADE / riskPerUnit;
-    const qtyByCash = state.cash / (a.price * (1 + FEE_RATE + SLIPPAGE_RATE));
-    const qty = Math.min(qtyByRisk, qtyByCash);
-    const entryPrice = a.price * (1 + SLIPPAGE_RATE);
+    if (asset.signal.status !== 'BUY') continue;
+    if (state.positions.some(p => p.symbol === asset.symbol)) continue;
+    const candle = asset.signal.candleTimes?.m3;
+    if (!candle || state.lastEntry[asset.symbol] === candle) continue;
+
+    const entryPrice = asset.price * (1 + SLIPPAGE_RATE);
+    const qty = ALLOCATION_PER_TRADE / entryPrice;
     const notional = qty * entryPrice;
     const entryFee = notional * FEE_RATE;
-    if (!(qty > 0) || notional + entryFee > state.cash || notional < 5) continue;
-    const actualRisk = qty * (entryPrice - stop) + entryFee;
+    if (!(qty > 0) || notional + entryFee > state.cash) continue;
+
+    const stopPrice = entryPrice * (1 - STOP_LOSS_PCT);
+    const target1Price = entryPrice * (1 + TAKE_PROFIT_1_PCT);
+    const target2Price = entryPrice * (1 + TAKE_PROFIT_2_PCT);
+    const estimatedStopLoss = (entryPrice - stopPrice) * qty + entryFee +
+      stopPrice * qty * (FEE_RATE + SLIPPAGE_RATE);
+
     state.cash -= notional + entryFee;
     state.positions.push({
-      id: `${a.symbol}-${now}`, symbol: a.symbol, entryPrice, stopPrice: stop,
-      targetPrice: entryPrice + 2 * distance, quantity: qty, notional,
-      entryFee, riskUsd: actualRisk, openedAt: now, entryCandle: candle,
-      markPrice: a.price, partialTaken: false
+      id: `${asset.symbol}-${now}`, symbol: asset.symbol,
+      entryPrice, stopPrice, target1Price, target2Price,
+      quantity: qty, originalQuantity: qty, notional,
+      entryFee, riskUsd: estimatedStopLoss,
+      openedAt: now, entryCandle: candle, markPrice: asset.price,
+      partialTaken: false, allocationUsd: ALLOCATION_PER_TRADE
     });
-    state.lastEntry[a.symbol] = candle;
+    state.lastEntry[asset.symbol] = candle;
   }
   saveState();
 }
@@ -242,7 +276,7 @@ function portfolio() {
   const unrealized = state.positions.reduce((sum, p) => {
     const mark = p.markPrice || p.entryPrice;
     return sum + (mark - p.entryPrice) * p.quantity -
-      (mark * p.quantity * FEE_RATE);
+      (mark * p.quantity * (FEE_RATE + SLIPPAGE_RATE));
   }, 0);
   const invested = state.positions.reduce((sum, p) => sum + p.quantity * p.entryPrice, 0);
   return {
@@ -262,8 +296,10 @@ async function market() {
   executePaper(assets);
   return {
     source: 'Binance Spot public market data', updatedAt: new Date().toISOString(),
-    mode: 'paper_only', capitalUsd: CAPITAL, maxRiskUsd: RISK_PER_TRADE,
-    maxOpenPositions: MAX_OPEN_POSITIONS, symbols, assets, errors, portfolio: portfolio()
+    mode: 'paper_only', capitalUsd: CAPITAL, maxLossUsdPerPosition: ALLOCATION_PER_TRADE * STOP_LOSS_PCT,
+    maxOpenPositions: MAX_OPEN_POSITIONS,
+    strategy: { allocationUsdPerTrade: ALLOCATION_PER_TRADE, stopLossPercent: STOP_LOSS_PCT * 100, takeProfit1Percent: TAKE_PROFIT_1_PCT * 100, takeProfit1SellPercent: 50, takeProfit2Percent: TAKE_PROFIT_2_PCT * 100 },
+    symbols, assets, errors, portfolio: portfolio()
   };
 }
 
@@ -353,84 +389,97 @@ function latestAt(series, candles, time, pointer) {
 }
 function feeAdjustedEntry(raw) { return raw * (1 + SLIPPAGE_RATE); }
 function feeAdjustedExit(raw) { return raw * (1 - SLIPPAGE_RATE); }
-function simulateTrade(candles, index, entry, stopDistance, mode, maxMinutes) {
-  const initialStop = entry - stopDistance;
-  const target1 = entry + stopDistance;
-  const target2 = entry + 2 * stopDistance;
-  const qty = RISK_PER_TRADE / stopDistance;
-  let remaining = qty, pnl = 0, partial = false, activeStop = initialStop;
-  let exitTime = null, reason = null;
+function simulateTrade(candles, index, entry, maxMinutes) {
+  const qty = ALLOCATION_PER_TRADE / entry;
+  const stopInitial = entry * (1 - STOP_LOSS_PCT);
+  const target1 = entry * (1 + TAKE_PROFIT_1_PCT);
+  const target2 = entry * (1 + TAKE_PROFIT_2_PCT);
+  let remaining = qty;
+  let pnl = 0;
+  let totalFees = entry * qty * FEE_RATE;
+  let partialTaken = false;
+  let activeStop = stopInitial;
+  let exitTime = null;
+  let exitReason = null;
+  let lastSeen = index;
   const endTime = candles[index].openTime + maxMinutes * 60000;
 
   function realize(rawPrice, amount) {
-    const px = feeAdjustedExit(rawPrice);
-    pnl += (px - entry) * amount - px * amount * FEE_RATE;
+    const fill = rawPrice * (1 - SLIPPAGE_RATE);
+    const fee = fill * amount * FEE_RATE;
+    pnl += (fill - entry) * amount - fee;
+    totalFees += fee;
   }
 
   for (let j = index; j < candles.length; j++) {
-    const c = candles[j];
-    if (c.openTime > endTime) break;
+    const candle = candles[j];
+    if (candle.openTime > endTime) break;
+    lastSeen = j;
 
-    // Conservative OHLC handling: active stop is evaluated before targets.
-    if (c.low <= activeStop) {
-      realize(activeStop, remaining);
-      exitTime = c.closeTime;
-      reason = partial ? 'BREAKEVEN_AFTER_PARTIAL' : 'STOP';
+    // Conservative gap handling and stop-first OHLC convention.
+    if (candle.low <= activeStop) {
+      const fill = candle.open < activeStop ? candle.open : activeStop;
+      realize(fill, remaining);
+      exitTime = candle.closeTime;
+      exitReason = partialTaken ? 'BREAKEVEN_AFTER_TP1' : 'STOP_LOSS_20_PERCENT';
       remaining = 0;
       break;
     }
 
-    if (mode === 'A') {
-      if (c.high >= target2) {
-        realize(target2, remaining);
-        exitTime = c.closeTime; reason = 'TARGET_2R'; remaining = 0; break;
-      }
-    } else {
-      if (!partial && c.high >= target1) {
-        const sold = remaining * 0.5;
-        realize(target1, sold);
-        remaining -= sold;
-        partial = true;
-        activeStop = entry;
+    if (!partialTaken && candle.high >= target1) {
+      const fill = candle.open > target1 ? candle.open : target1;
+      const half = remaining * 0.5;
+      realize(fill, half);
+      remaining -= half;
+      partialTaken = true;
+      activeStop = entry;
 
-        // If the same OHLC candle also traded back through entry, assume
-        // the remaining half was stopped at breakeven (conservative ordering).
-        if (c.low <= entry) {
-          realize(entry, remaining);
-          exitTime = c.closeTime;
-          reason = 'BREAKEVEN_AFTER_PARTIAL';
-          remaining = 0;
-          break;
-        }
-      }
-      if (partial && c.high >= target2) {
-        realize(target2, remaining);
-        exitTime = c.closeTime;
-        reason = 'TARGET_2R_AFTER_PARTIAL';
+      // If same candle also reaches entry on the downside, assume the
+      // remaining half is stopped at breakeven (conservative OHLC ordering).
+      if (candle.low <= entry) {
+        realize(entry, remaining);
+        exitTime = candle.closeTime;
+        exitReason = 'BREAKEVEN_AFTER_TP1';
         remaining = 0;
         break;
       }
     }
 
-    if (j === candles.length - 1 || c.closeTime >= endTime) {
-      realize(c.close, remaining);
-      exitTime = c.closeTime;
-      reason = partial ? 'TIME_EXIT_AFTER_PARTIAL' : 'TIME_EXIT';
+    if (partialTaken && candle.high >= target2) {
+      const fill = candle.open > target2 ? candle.open : target2;
+      realize(fill, remaining);
+      exitTime = candle.closeTime;
+      exitReason = 'TAKE_PROFIT_2_30_PERCENT';
+      remaining = 0;
+      break;
+    }
+
+    if (candle.closeTime >= endTime) {
+      realize(candle.close, remaining);
+      exitTime = candle.closeTime;
+      exitReason = partialTaken ? 'TIME_EXIT_AFTER_TP1' : 'TIME_EXIT';
       remaining = 0;
       break;
     }
   }
 
   if (remaining > 0) {
-    const last = candles[Math.min(candles.length - 1, index)];
+    const last = candles[lastSeen];
     realize(last.close, remaining);
     exitTime = last.closeTime;
-    reason = 'DATA_END';
+    exitReason = partialTaken ? 'TIME_EXIT_AFTER_TP1' : 'TIME_EXIT_DATA_END';
+    remaining = 0;
   }
-  const entryFee = entry * qty * FEE_RATE;
+
+  const stopFill = stopInitial * (1 - SLIPPAGE_RATE);
+  const stopRiskEstimate = (entry - stopFill) * qty +
+    entry * qty * FEE_RATE + stopFill * qty * FEE_RATE;
   return {
-    entryTime: candles[index].openTime, exitTime, entry, stop: initialStop,
-    qty, pnl: pnl - entryFee, reason, partialTaken: partial
+    entryTime: candles[index].openTime, exitTime, entry,
+    stop: stopInitial, target1, target2, qty,
+    notional: entry * qty, pnl, reason: exitReason,
+    partialTaken, estimatedRiskIncludingCosts: stopRiskEstimate,
+    totalFees, allocationUsd: ALLOCATION_PER_TRADE
   };
 }
 function summarizeTrades(trades, label, symbol) {
@@ -451,6 +500,13 @@ function summarizeTrades(trades, label, symbol) {
     expectancy: trades.length ? trades.reduce((s, t) => s + t.pnl, 0) / trades.length : 0,
     maxDrawdownPercent: maxDrawdown,
     avgHoldingMinutes: trades.length ? trades.reduce((s, t) => s + (t.exitTime - t.entryTime) / 60000, 0) / trades.length : 0,
+    stopExits: trades.filter(t => t.reason === 'STOP_LOSS_20_PERCENT').length,
+    breakevenExits: trades.filter(t => t.reason === 'BREAKEVEN_AFTER_TP1').length,
+    target1Trades: trades.filter(t => t.partialTaken).length,
+    target2Exits: trades.filter(t => t.reason === 'TAKE_PROFIT_2_30_PERCENT').length,
+    timeExits: trades.filter(t => String(t.reason).includes('TIME_EXIT')).length,
+    totalFees: trades.reduce((s, t) => s + (t.totalFees || 0), 0),
+    avgEstimatedRisk: trades.length ? trades.reduce((s, t) => s + (t.estimatedRiskIncludingCosts || 0), 0) / trades.length : 0,
     sample: trades.slice(-30)
   };
 }
@@ -471,7 +527,6 @@ async function backtest(res) {
     const comparisons = [];
     const diagnostics = { scanned3mCandles: 0, candidateSignals: 0, rejected: { data: 0, h1: 0, m15: 0, m5: 0, m3: 0 } };
     for (const minutes of [30, 60, 120]) {
-      for (const mode of ['A', 'B']) {
         const trades = [];
         const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
         let nextAllowedTime = 0;
@@ -491,20 +546,17 @@ async function backtest(res) {
           diagnostics.candidateSignals++;
           const entryRaw = m3[i + 1].open;
           const entry = feeAdjustedEntry(entryRaw);
-          const dist = a3.atr14 * 1.5;
-          if (!(dist > 0)) continue;
-          const trade = simulateTrade(m3, i + 1, entry, dist, mode, minutes);
+          const trade = simulateTrade(m3, i + 1, entry, minutes);
           trades.push(trade);
           nextAllowedTime = trade.exitTime || c.closeTime;
         }
-        comparisons.push(summarizeTrades(trades, `Mode ${mode} / ${minutes} min`, symbol));
-      }
+        comparisons.push(summarizeTrades(trades, `TP1 +10% / TP2 +30% / ${minutes} min`, symbol));
     }
     const sharedStart = Math.max(h1[0]?.openTime || 0, m15[0]?.openTime || 0, m5[0]?.openTime || 0, m3[0]?.openTime || 0);
     const sharedEnd = Math.min(h1.at(-1)?.closeTime || 0, m15.at(-1)?.closeTime || 0, m5.at(-1)?.closeTime || 0, m3.at(-1)?.closeTime || 0);
-    const defaultResult = comparisons.find(x => x.label === 'Mode A / 60 min') || comparisons[0];
+    const defaultResult = comparisons.find(x => x.label.endsWith('/ 60 min')) || comparisons[0];
     send(res, {
-      version: 'V5', symbol, intervals: ['1h', '15m', '5m', '3m'],
+      version: 'V5.3', symbol, intervals: ['1h', '15m', '5m', '3m'],
       // Legacy summary fields are retained so the existing V4 dashboard can still render a result.
       trades: defaultResult.trades, wins: defaultResult.wins, losses: defaultResult.losses,
       winRate: defaultResult.winRate, netPnl: defaultResult.netPnl,
@@ -513,10 +565,21 @@ async function backtest(res) {
       sharedPeriod: { start: new Date(sharedStart).toISOString(), end: new Date(sharedEnd).toISOString() },
       comparisons, diagnostics,
       costs: { feeRatePerSide: FEE_RATE, slippageRatePerSide: SLIPPAGE_RATE },
+      strategy: {
+        allocationUsdPerTrade: ALLOCATION_PER_TRADE,
+        allocationPercentOfCapital: 10,
+        maxOpenPositions: MAX_OPEN_POSITIONS,
+        stopLossPercent: STOP_LOSS_PCT * 100,
+        takeProfit1Percent: TAKE_PROFIT_1_PCT * 100,
+        takeProfit1SellPercent: 50,
+        afterTakeProfit1: 'Sell half; move remaining stop to entry price',
+        takeProfit2Percent: TAKE_PROFIT_2_PCT * 100,
+        takeProfit2SellPercent: 100
+      },
       limitations: [
         'قائمة أفضل 10 تُختار من بيانات السوق الحالية؛ لا تتوفر هنا لقطات تاريخية موثقة لقائمة الأزواج المؤهلة، لذلك لا يمكن إزالة انحياز البقاء بالكامل.',
-        'الاختبار التاريخي لكل رمز على حدة وليس محاكاة محفظة مشتركة متعددة الرموز؛ لذلك لا يمثل قيود رأس المال والتزامن الثلاثة على مستوى المحفظة.',
-        'طريقة B: بيع 50% عند +1R ثم نقل وقف الكمية المتبقية إلى سعر الدخول، والهدف +2R؛ لا يُحتسب نقل الوقف إلا بعد إغلاق شمعة لمس +1R، وبافتراض محافظ عند تعارض الوقف والهدف.',
+        'الاختبار التاريخي لكل رمز على حدة وبحجم دخول ثابت 5 دولارات؛ لا يحاكي تداخل صفقات عدة رموز في محفظة واحدة. التداول الحي التجريبي يقيّد المراكز المفتوحة بثلاثة وبقيمة 5 دولارات لكل مركز.',
+        'إدارة الصفقة المعتمدة: دخول بقيمة 5 دولارات، وقف عند -20% من سعر الدخول، بيع نصف الكمية عند +10%، ثم نقل وقف النصف المتبقي إلى سعر الدخول، وبيع الباقي عند +30%.',
         'الاختبار يستخدم شموع OHLC؛ ترتيب الحركة داخل الشمعة غير معروف، لذا يُحتسب الوقف أولاً عند لمس الوقف والهدف معاً.'
       ]
     });
@@ -550,4 +613,4 @@ http.createServer(async (req, res) => {
     if (err) { res.writeHead(404); res.end('Not found'); }
     else { res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' }); res.end(data); }
   });
-}).listen(PORT, '0.0.0.0', () => console.log(`Mohammed Trading AI V5 paper server on ${PORT}`));
+}).listen(PORT, '0.0.0.0', () => console.log(`Mohammed Trading AI V5.3 paper server on ${PORT}`));

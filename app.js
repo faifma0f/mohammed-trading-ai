@@ -87,9 +87,19 @@ function renderComparisons(data) {
         <span>الصفقات <b>${x.trades}</b></span>
         <span>الفوز <b>${pct(x.winRate)}</b></span>
         <span>Profit Factor <b>${x.profitFactor == null ? '—' : Number(x.profitFactor).toFixed(2)}</b></span>
+        <span>وقف الخسارة <b>${x.stopExits ?? 0}</b></span>
+        <span>وصل TP1 <b>${x.target1Trades ?? 0}</b></span>
+        <span>وصل TP2 <b>${x.target2Exits ?? 0}</b></span>
+        <span>تعادل بعد TP1 <b>${x.breakevenExits ?? 0}</b></span>
         <span>Expectancy <b>${money(x.expectancy)}</b></span>
         <span>Max Drawdown <b>${pct(x.maxDrawdownPercent)}</b></span>
         <span>متوسط الاحتفاظ <b>${Number(x.avgHoldingMinutes || 0).toFixed(1)} د</b></span>
+        <span>وقف الخسارة <b>${x.stopExits ?? 0}</b></span>
+        <span>التعادل <b>${x.breakevenExits ?? 0}</b></span>
+        <span>أهداف ربح <b>${x.targetExits ?? 0}</b></span>
+        <span>خروج زمني <b>${x.timeExits ?? 0}</b></span>
+        <span>إجمالي الرسوم <b>${money(x.totalFees || 0)}</b></span>
+        <span>متوسط المخاطرة الفعلية <b>${money(x.avgEstimatedRisk || 0)}</b></span>
       </div>
     </article>`).join('');
   const c = data.candleCounts || {};
@@ -105,7 +115,7 @@ function renderComparisons(data) {
 async function runBacktest() {
   const symbol = $('symbolSelect').value;
   $('backtestBtn').disabled = true;
-  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم. قد يستغرق ذلك بعض الوقت…`;
+  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم باستراتيجية TP1 +10% وTP2 +30%. قد يستغرق ذلك بعض الوقت…`;
   $('backtestSummary').innerHTML = '';
   $('diagnostics').innerHTML = '';
   $('limitations').classList.add('hidden');
@@ -113,11 +123,11 @@ async function runBacktest() {
     const r = await fetch(`/api/backtest?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || data.error || 'فشل الاختبار');
-    if (data.version !== 'V5' || !Array.isArray(data.comparisons)) {
-      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر server-v5.1.js في Railway.');
+    if (data.version !== 'V5.3' || !Array.isArray(data.comparisons)) {
+      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر server-v5.2.js في Railway.');
     }
     renderComparisons(data);
-    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة · الانزلاق ${pct(data.costs?.slippageRatePerSide * 100)} لكل جهة`;
+    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · دخول $5 · وقف -20% · TP1 +10% (نصف الكمية) · TP2 +30% · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة`;
   } catch (e) {
     $('backtestStatus').textContent = `تعذر الاختبار: ${e.message}`;
   } finally {
