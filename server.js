@@ -223,8 +223,9 @@ async function backtest(res){
       if(!(a1.close>a1.ema50&&a1.ema50>a1.ema200)){reject.trend1h++;continue;}
       if(!(a15.close>a15.ema20&&a15.ema20>a15.ema50)){reject.trend15m++;continue;}
       const decision=scoreAt(a1,a15,a5,a3);if(!decision.ok){reject.score++;continue;}
-      signals++;const entry=m3[i+1].open*(1+SLIPPAGE),trade=simulate(m3,i+1,entry);trades.push(trade);nextEntry=trade.exitTime||c.closeTime;
-    }
+      const ptr={h1:-1,m15:-1,m5:-1},trades=[],reject={data:0,trend1h:0,trend15m:0,score:0};
+let signals=0;
+let nextEntry=0;
     const result=summarize(trades,symbol,start,end);
     send(res,{version:'V6',...result,intervals:INTERVALS,candleCounts:{'1h':h1.length,'15m':m15.length,'5m':m5.length,'3m':m3.length},diagnostics:{candidateSignals:signals,rejected:reject},costs:{feePerSidePercent:FEE*100,slippagePerSidePercent:SLIPPAGE*100},strategy:{allocationUsd:ALLOCATION,stopLossPercent:10,tp1Percent:20,tp1SellPercent:50,tp2Percent:30,scoreThreshold:75,scoreModel:{trend1h:20,trend15m:15,macd:15,rsi:10,pricePattern:15,relativeVolume:15,turnover:10}},limitations:[
       'اختبار الرمز المحدد فقط؛ لا يحاكي محفظة متعددة العملات أو حد ثلاثة مراكز متزامنة.',
