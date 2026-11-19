@@ -115,7 +115,7 @@ function renderComparisons(data) {
 async function runBacktest() {
   const symbol = $('symbolSelect').value;
   $('backtestBtn').disabled = true;
-  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم باستراتيجية TP1 +10% وTP2 +30%. قد يستغرق ذلك بعض الوقت…`;
+  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم، ومقارنة هدفَي 0.8%/1.5% و1%/2% مع وقف -0.7%. قد يستغرق ذلك بعض الوقت…`;
   $('backtestSummary').innerHTML = '';
   $('diagnostics').innerHTML = '';
   $('limitations').classList.add('hidden');
@@ -123,11 +123,11 @@ async function runBacktest() {
     const r = await fetch(`/api/backtest?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || data.error || 'فشل الاختبار');
-    if (data.version !== 'V5.3' || !Array.isArray(data.comparisons)) {
-      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر server-v5.2.js في Railway.');
+    if (data.version !== 'V5.4' || !Array.isArray(data.comparisons)) {
+      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر ملفات V5.4 الأربعة في Railway.');
     }
     renderComparisons(data);
-    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · دخول $5 · وقف -20% · TP1 +10% (نصف الكمية) · TP2 +30% · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة`;
+    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · دخول $5 · وقف -0.7% · TP1 +0.8% (بيع النصف وتحريك الوقف للدخول) · TP2 +1.5% · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة`;
   } catch (e) {
     $('backtestStatus').textContent = `تعذر الاختبار: ${e.message}`;
   } finally {

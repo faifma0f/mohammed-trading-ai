@@ -7,9 +7,13 @@ const PORT = process.env.PORT || 8080;
 const BINANCE = 'https://data-api.binance.vision';
 const CAPITAL = 50;
 const ALLOCATION_PER_TRADE = CAPITAL * 0.10; // $5 لكل صفقة
-const STOP_LOSS_PCT = 0.20;                  // -20% من سعر الدخول
-const TAKE_PROFIT_1_PCT = 0.10;               // +10%: بيع نصف الكمية
-const TAKE_PROFIT_2_PCT = 0.30;               // +30%: بيع النصف المتبقي
+const STOP_LOSS_PCT = 0.007;                // -0.7% من سعر الدخول
+const TAKE_PROFIT_1_PCT = 0.008;              // +0.8%: بيع نصف الكمية
+const TAKE_PROFIT_2_PCT = 0.015;              // +1.5%: بيع النصف المتبقي
+const BACKTEST_PROFILES = [
+  { id: 'P1', label: 'TP1 +0.8% / TP2 +1.5%', stop: 0.007, tp1: 0.008, tp2: 0.015 },
+  { id: 'P2', label: 'TP1 +1.0% / TP2 +2.0%', stop: 0.007, tp1: 0.010, tp2: 0.020 }
+];
 const MAX_OPEN_POSITIONS = 3;
 const MAX_SYMBOLS = 10;
 const FEE_RATE = 0.001;       // تقدير 0.10% لكل تنفيذ؛ عدّله حسب فئة رسوم حسابك
@@ -28,7 +32,7 @@ const MIME = {
 
 function freshState() {
   return {
-    version: 5,
+    version: 6,
     initialCapital: CAPITAL,
     cash: CAPITAL,
     realizedPnl: 0,
@@ -41,7 +45,7 @@ function loadState() {
   try {
     const s = JSON.parse(fs.readFileSync(DB, 'utf8'));
     if (!s || !Array.isArray(s.positions) || !Array.isArray(s.trades)) return freshState();
-    return { ...freshState(), ...s, version: 5 };
+    return { ...freshState(), ...s, version: 6 };
   } catch {
     return freshState();
   }
@@ -148,7 +152,7 @@ function signal(a1h, a15, a5, a3, price) {
       estimatedLossUsd: ALLOCATION_PER_TRADE * STOP_LOSS_PCT,
       quantityBase: price > 0 ? ALLOCATION_PER_TRADE / price : null,
       notionalUsd: ALLOCATION_PER_TRADE,
-      management: 'TP1 +10% sell half, move remaining stop to entry; TP2 +30%'
+      management: 'TP1 +0.8% sell half, move remaining stop to entry; TP2 +1.5%'
     },
     candleTimes: { h1: a1h.candleTime, m15: a15.candleTime, m5: a5.candleTime, m3: a3.candleTime }
   };
@@ -196,12 +200,12 @@ function executePaper(assets) {
     pos.markPrice = price;
 
     if (price <= pos.stopPrice) {
-      closePosition(pos, pos.stopPrice, pos.partialTaken ? 'وقف التعادل بعد TP1' : 'وقف خسارة -20%', now);
+      closePosition(pos, pos.stopPrice, pos.partialTaken ? 'وقف التعادل بعد TP1' : 'وقف خسارة -0.7%', now);
       continue;
     }
 
     if (!pos.partialTaken && price >= pos.target1Price) {
-      closePosition(pos, pos.target1Price, 'TP1 +10% (بيع نصف الكمية)', now, 0.5);
+      closePosition(pos, pos.target1Price, 'TP1 +0.8% (بيع نصف الكمية)', now, 0.5);
       const remaining = state.positions.find(p => p.id === pos.id);
       if (remaining) {
         remaining.partialTaken = true;
@@ -216,7 +220,7 @@ function executePaper(assets) {
       continue;
     }
     if (remaining && remaining.partialTaken && price >= remaining.target2Price) {
-      closePosition(remaining, remaining.target2Price, 'TP2 +30% (بيع المتبقي)', now);
+      closePosition(remaining, remaining.target2Price, 'TP2 +1.5% (بيع المتبقي)', now);
     }
   }
 
@@ -298,7 +302,7 @@ async function market() {
     source: 'Binance Spot public market data', updatedAt: new Date().toISOString(),
     mode: 'paper_only', capitalUsd: CAPITAL, maxLossUsdPerPosition: ALLOCATION_PER_TRADE * STOP_LOSS_PCT,
     maxOpenPositions: MAX_OPEN_POSITIONS,
-    strategy: { allocationUsdPerTrade: ALLOCATION_PER_TRADE, stopLossPercent: STOP_LOSS_PCT * 100, takeProfit1Percent: TAKE_PROFIT_1_PCT * 100, takeProfit1SellPercent: 50, takeProfit2Percent: TAKE_PROFIT_2_PCT * 100 },
+    strategy: { allocationUsdPerTrade: ALLOCATION_PER_TRADE, stopLossPercent: STOP_LOSS_PCT * 100, takeProfit1Percent: TAKE_PROFIT_1_PCT * 100, takeProfit1SellPercent: 50, takeProfit2Percent: TAKE_PROFIT_2_PCT * 100, afterTakeProfit1: 'Sell 50%; move remaining stop to entry' },
     symbols, assets, errors, portfolio: portfolio()
   };
 }
@@ -389,11 +393,11 @@ function latestAt(series, candles, time, pointer) {
 }
 function feeAdjustedEntry(raw) { return raw * (1 + SLIPPAGE_RATE); }
 function feeAdjustedExit(raw) { return raw * (1 - SLIPPAGE_RATE); }
-function simulateTrade(candles, index, entry, maxMinutes) {
+function simulateTrade(candles, index, entry, maxMinutes, profile) {
   const qty = ALLOCATION_PER_TRADE / entry;
-  const stopInitial = entry * (1 - STOP_LOSS_PCT);
-  const target1 = entry * (1 + TAKE_PROFIT_1_PCT);
-  const target2 = entry * (1 + TAKE_PROFIT_2_PCT);
+  const stopInitial = entry * (1 - profile.stop);
+  const target1 = entry * (1 + profile.tp1);
+  const target2 = entry * (1 + profile.tp2);
   let remaining = qty;
   let pnl = 0;
   let totalFees = entry * qty * FEE_RATE;
@@ -421,7 +425,7 @@ function simulateTrade(candles, index, entry, maxMinutes) {
       const fill = candle.open < activeStop ? candle.open : activeStop;
       realize(fill, remaining);
       exitTime = candle.closeTime;
-      exitReason = partialTaken ? 'BREAKEVEN_AFTER_TP1' : 'STOP_LOSS_20_PERCENT';
+      exitReason = partialTaken ? 'BREAKEVEN_AFTER_TP1' : 'STOP_LOSS';
       remaining = 0;
       break;
     }
@@ -500,7 +504,7 @@ function summarizeTrades(trades, label, symbol) {
     expectancy: trades.length ? trades.reduce((s, t) => s + t.pnl, 0) / trades.length : 0,
     maxDrawdownPercent: maxDrawdown,
     avgHoldingMinutes: trades.length ? trades.reduce((s, t) => s + (t.exitTime - t.entryTime) / 60000, 0) / trades.length : 0,
-    stopExits: trades.filter(t => t.reason === 'STOP_LOSS_20_PERCENT').length,
+    stopExits: trades.filter(t => t.reason === 'STOP_LOSS').length,
     breakevenExits: trades.filter(t => t.reason === 'BREAKEVEN_AFTER_TP1').length,
     target1Trades: trades.filter(t => t.partialTaken).length,
     target2Exits: trades.filter(t => t.reason === 'TAKE_PROFIT_2_30_PERCENT').length,
@@ -526,37 +530,56 @@ async function backtest(res) {
     };
     const comparisons = [];
     const diagnostics = { scanned3mCandles: 0, candidateSignals: 0, rejected: { data: 0, h1: 0, m15: 0, m5: 0, m3: 0 } };
-    for (const minutes of [30, 60, 120]) {
+    for (const profile of BACKTEST_PROFILES) {
+      for (const minutes of [30, 60, 120]) {
         const trades = [];
         const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
         let nextAllowedTime = 0;
         for (let i = 205; i < m3.length - 1; i++) {
           const c = m3[i];
           if (c.closeTime >= Date.now() || c.openTime < nextAllowedTime) continue;
-          diagnostics.scanned3mCandles++;
+          if (minutes === 30 && profile.id === 'P1') diagnostics.scanned3mCandles++;
           const a1 = latestAt(series.h1, h1, c.closeTime, ptr.h1);
           const a15 = latestAt(series.m15, m15, c.closeTime, ptr.m15);
           const a5 = latestAt(series.m5, m5, c.closeTime, ptr.m5);
           const a3 = series.m3[i];
-          if (!a1 || !a15 || !a5 || !a3) { diagnostics.rejected.data++; continue; }
-          if (!(a1.close > a1.ema50 && a1.ema50 > a1.ema200)) { diagnostics.rejected.h1++; continue; }
-          if (!(a15.close > a15.ema50 && a15.ema50 > a15.ema200)) { diagnostics.rejected.m15++; continue; }
-          if (!(a5.close > a5.ema20 && a5.ema20 > a5.ema50 && a5.rsi14 >= 50 && a5.rsi14 <= 70)) { diagnostics.rejected.m5++; continue; }
-          if (!(a3.close > a3.ema20 && a3.close > a3.previousClose && a3.rsi14 >= 50 && a3.rsi14 <= 70)) { diagnostics.rejected.m3++; continue; }
-          diagnostics.candidateSignals++;
+          if (!a1 || !a15 || !a5 || !a3) {
+            if (minutes === 30 && profile.id === 'P1') diagnostics.rejected.data++;
+            continue;
+          }
+          if (!(a1.close > a1.ema50 && a1.ema50 > a1.ema200)) {
+            if (minutes === 30 && profile.id === 'P1') diagnostics.rejected.h1++;
+            continue;
+          }
+          if (!(a15.close > a15.ema50 && a15.ema50 > a15.ema200)) {
+            if (minutes === 30 && profile.id === 'P1') diagnostics.rejected.m15++;
+            continue;
+          }
+          if (!(a5.close > a5.ema20 && a5.ema20 > a5.ema50 && a5.rsi14 >= 50 && a5.rsi14 <= 70)) {
+            if (minutes === 30 && profile.id === 'P1') diagnostics.rejected.m5++;
+            continue;
+          }
+          if (!(a3.close > a3.ema20 && a3.close > a3.previousClose && a3.rsi14 >= 50 && a3.rsi14 <= 70)) {
+            if (minutes === 30 && profile.id === 'P1') diagnostics.rejected.m3++;
+            continue;
+          }
+          if (minutes === 30 && profile.id === 'P1') diagnostics.candidateSignals++;
           const entryRaw = m3[i + 1].open;
           const entry = feeAdjustedEntry(entryRaw);
-          const trade = simulateTrade(m3, i + 1, entry, minutes);
+          const trade = simulateTrade(m3, i + 1, entry, minutes, profile);
           trades.push(trade);
           nextAllowedTime = trade.exitTime || c.closeTime;
         }
-        comparisons.push(summarizeTrades(trades, `TP1 +10% / TP2 +30% / ${minutes} min`, symbol));
+        comparisons.push(summarizeTrades(
+          trades, `${profile.label} / ${minutes} min`, symbol
+        ));
+      }
     }
     const sharedStart = Math.max(h1[0]?.openTime || 0, m15[0]?.openTime || 0, m5[0]?.openTime || 0, m3[0]?.openTime || 0);
     const sharedEnd = Math.min(h1.at(-1)?.closeTime || 0, m15.at(-1)?.closeTime || 0, m5.at(-1)?.closeTime || 0, m3.at(-1)?.closeTime || 0);
-    const defaultResult = comparisons.find(x => x.label.endsWith('/ 60 min')) || comparisons[0];
+    const defaultResult = comparisons.find(x => x.label.startsWith(BACKTEST_PROFILES[0].label) && x.label.endsWith('/ 60 min')) || comparisons[0];
     send(res, {
-      version: 'V5.3', symbol, intervals: ['1h', '15m', '5m', '3m'],
+      version: 'V5.4', symbol, intervals: ['1h', '15m', '5m', '3m'],
       // Legacy summary fields are retained so the existing V4 dashboard can still render a result.
       trades: defaultResult.trades, wins: defaultResult.wins, losses: defaultResult.losses,
       winRate: defaultResult.winRate, netPnl: defaultResult.netPnl,
@@ -579,7 +602,8 @@ async function backtest(res) {
       limitations: [
         'قائمة أفضل 10 تُختار من بيانات السوق الحالية؛ لا تتوفر هنا لقطات تاريخية موثقة لقائمة الأزواج المؤهلة، لذلك لا يمكن إزالة انحياز البقاء بالكامل.',
         'الاختبار التاريخي لكل رمز على حدة وبحجم دخول ثابت 5 دولارات؛ لا يحاكي تداخل صفقات عدة رموز في محفظة واحدة. التداول الحي التجريبي يقيّد المراكز المفتوحة بثلاثة وبقيمة 5 دولارات لكل مركز.',
-        'إدارة الصفقة المعتمدة: دخول بقيمة 5 دولارات، وقف عند -20% من سعر الدخول، بيع نصف الكمية عند +10%، ثم نقل وقف النصف المتبقي إلى سعر الدخول، وبيع الباقي عند +30%.',
+        'الإعداد الأساسي المباشر: دخول بقيمة 5 دولارات، وقف عند -0.7% من سعر الدخول، بيع نصف الكمية عند +0.8%، ثم نقل وقف النصف المتبقي إلى سعر الدخول، وبيع الباقي عند +1.5%.',
+        'تتم مقارنة الإعداد الأساسي TP1 +0.8% / TP2 +1.5% مع إعداد بديل TP1 +1.0% / TP2 +2.0%، وكلاهما يستخدم وقف -0.7%.',
         'الاختبار يستخدم شموع OHLC؛ ترتيب الحركة داخل الشمعة غير معروف، لذا يُحتسب الوقف أولاً عند لمس الوقف والهدف معاً.'
       ]
     });
@@ -613,4 +637,4 @@ http.createServer(async (req, res) => {
     if (err) { res.writeHead(404); res.end('Not found'); }
     else { res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' }); res.end(data); }
   });
-}).listen(PORT, '0.0.0.0', () => console.log(`Mohammed Trading AI V5.3 paper server on ${PORT}`));
+}).listen(PORT, '0.0.0.0', () => console.log(`Mohammed Trading AI V5.4 paper server on ${PORT}`));
