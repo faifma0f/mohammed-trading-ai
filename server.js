@@ -1,139 +1,26 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-
-const ROOT = __dirname;
-const PORT = process.env.PORT || 8080;
-const BINANCE = "https://data-api.binance.vision";
-const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
-const MIME = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
-};
-
-async function getJson(url) {
-  const r = await fetch(url, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(12000) });
-  if (!r.ok) throw new Error(`Binance HTTP ${r.status}`);
-  return r.json();
-}
-function ema(values, period) {
-  if (values.length < period) return null;
-  const k = 2 / (period + 1);
-  let v = values.slice(0, period).reduce((a,b)=>a+b,0) / period;
-  for (let i=period; i<values.length; i++) v = values[i]*k + v*(1-k);
-  return v;
-}
-function rsi(values, period=14) {
-  if (values.length <= period) return null;
-  let gains=0, losses=0;
-  for(let i=1;i<=period;i++){const d=values[i]-values[i-1]; if(d>=0) gains+=d; else losses-=d;}
-  let avgGain=gains/period, avgLoss=losses/period;
-  for(let i=period+1;i<values.length;i++){
-    const d=values[i]-values[i-1];
-    avgGain=(avgGain*(period-1)+Math.max(d,0))/period;
-    avgLoss=(avgLoss*(period-1)+Math.max(-d,0))/period;
-  }
-  if(avgLoss===0) return 100;
-  return 100-(100/(1+avgGain/avgLoss));
-}
-function atr(candles, period=14) {
-  if(candles.length < period+1) return null;
-  const trs=[];
-  for(let i=1;i<candles.length;i++){
-    const c=candles[i], p=candles[i-1];
-    trs.push(Math.max(c.high-c.low, Math.abs(c.high-p.close), Math.abs(c.low-p.close)));
-  }
-  return trs.slice(-period).reduce((a,b)=>a+b,0)/period;
-}
-function analyze(candles) {
-  // Binance's last kline may still be forming; use only fully closed candles.
-  const closed = candles.filter(c => c.closeTime < Date.now());
-  const closes = closed.map(c=>c.close);
-  if(closed.length < 205) return {ready:false, count:closed.length};
-  const last=closed[closed.length-1], prev=closed[closed.length-2];
-  return {
-    ready:true, close:last.close, previousClose:prev.close,
-    ema20:ema(closes,20), ema50:ema(closes,50), ema200:ema(closes,200),
-    rsi14:rsi(closes,14), atr14:atr(closed,14),
-    candleTime:last.closeTime, candleOpen:last.open, candleHigh:last.high, candleLow:last.low
-  };
-}
-function strategy(a15,a5,a3,price) {
-  if(!a15.ready || !a5.ready || !a3.ready) return {
-    status:"DATA_WAIT", label:"بانتظار اكتمال البيانات", reason:"نحتاج 205 شموع مغلقة لكل إطار لحساب EMA 200 بشكل سليم."
-  };
-  const trend15 = a15.close > a15.ema50 && a15.ema50 > a15.ema200;
-  const trend15Bear = a15.close < a15.ema50 && a15.ema50 < a15.ema200;
-  const confirm5 = a5.close > a5.ema20 && a5.ema20 > a5.ema50 && a5.rsi14 >= 50 && a5.rsi14 <= 70;
-  const confirm5Bear = a5.close < a5.ema20 && a5.ema20 < a5.ema50 && a5.rsi14 < 50;
-  const entry3 = a3.close > a3.ema20 && a3.close > a3.previousClose && a3.rsi14 >= 50 && a3.rsi14 <= 70;
-  const invalid3 = a3.close < a3.ema20 || a3.rsi14 > 75;
-  let status="WAIT", label="انتظار", reason="الشروط غير مكتملة؛ لا توجد صفقة.";
-  if(trend15 && confirm5 && entry3 && !invalid3){
-    status="BUY"; label="إشارة شراء تجريبية";
-    reason="اتجاه 15m صاعد، وتأكيد 5m إيجابي، وزخم 3m يؤكد الدخول.";
-  } else if(trend15Bear || confirm5Bear){
-    status="NO_BUY"; label="تجنب الشراء";
-    reason="الاتجاه أو تأكيد 5m لا يدعم صفقة شراء Spot.";
-  } else {
-    reason="ننتظر توافق الاتجاه على 15m والتأكيد على 5m وإشارة التوقيت على 3m.";
-  }
-  const stopDistance = a3.atr14 ? a3.atr14*1.5 : null;
-  const stop = stopDistance ? price-stopDistance : null;
-  const quantity = stopDistance && stopDistance>0 ? 0.50/stopDistance : null;
-  const notional = quantity ? quantity*price : null;
-  const target = stopDistance ? price+2*stopDistance : null;
-  return {
-    status,label,reason,
-    checks:{
-      trend15: trend15 ? "صاعد" : trend15Bear ? "هابط" : "محايد",
-      confirm5: confirm5 ? "إيجابي" : confirm5Bear ? "سلبي" : "غير مؤكد",
-      entry3: entry3 ? "متحقق" : "غير متحقق",
-      rsi15: a15.rsi14, rsi5:a5.rsi14, rsi3:a3.rsi14
-    },
-    risk:{maxLossUsd:0.50, stopPrice:stop, targetPrice:target, quantityBase:quantity, notionalUsd:notional, riskReward:"1:2"},
-    candleTimes:{m15:a15.candleTime,m5:a5.candleTime,m3:a3.candleTime}
-  };
-}
-async function getAsset(symbol) {
-  const [ticker, k15, k5, k3] = await Promise.all([
-    getJson(`${BINANCE}/api/v3/ticker/24hr?symbol=${symbol}`),
-    getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=15m&limit=250`),
-    getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=5m&limit=250`),
-    getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=3m&limit=250`)
-  ]);
-  const map = rows => rows.map(c=>({openTime:c[0],open:+c[1],high:+c[2],low:+c[3],close:+c[4],volume:+c[5],closeTime:c[6]}));
-  const c15=map(k15), c5=map(k5), c3=map(k3);
-  const a15=analyze(c15), a5=analyze(c5), a3=analyze(c3);
-  const price=+ticker.lastPrice;
-  return {
-    symbol, price, changePercent24h:+ticker.priceChangePercent,
-    high24h:+ticker.highPrice, low24h:+ticker.lowPrice,
-    analysis:{ "15m":a15, "5m":a5, "3m":a3 },
-    signal:strategy(a15,a5,a3,price)
-  };
-}
-async function api(res) {
-  try {
-    const assets=await Promise.all(SYMBOLS.map(getAsset));
-    res.writeHead(200,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
-    res.end(JSON.stringify({source:"Binance Spot public market data",updatedAt:new Date().toISOString(),capitalUsd:50,maxRiskUsd:0.5,mode:"paper_only",assets}));
-  } catch(e) {
-    res.writeHead(502,{"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store"});
-    res.end(JSON.stringify({error:"تعذر جلب بيانات Binance أو تحليلها حالياً",detail:e.message}));
-  }
-}
-http.createServer((req,res)=>{
-  const pathname=new URL(req.url||"/","http://localhost").pathname;
-  if(pathname==="/api/market") return api(res);
-  const requested=pathname==="/" ? "/index.html" : decodeURIComponent(pathname);
-  const file=path.resolve(ROOT,"."+requested);
-  if(!file.startsWith(ROOT+path.sep)){res.writeHead(403);return res.end("Forbidden");}
-  fs.readFile(file,(err,data)=>{
-    if(err){res.writeHead(404);return res.end("Not found");}
-    res.writeHead(200,{"Content-Type":MIME[path.extname(file)]||"application/octet-stream","Cache-Control":"no-store"});
-    res.end(data);
-  });
-}).listen(PORT,"0.0.0.0",()=>console.log(`Mohammed Trading AI listening on ${PORT}`));
+const http=require('http'),fs=require('fs'),path=require('path');
+const ROOT=__dirname,PORT=process.env.PORT||8080,BINANCE='https://data-api.binance.vision';
+const SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT'];
+const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8'};
+const DB=path.join(ROOT,'paper-state.json');
+function loadState(){try{return JSON.parse(fs.readFileSync(DB,'utf8'))}catch{return {initialCapital:50,cash:50,realizedPnl:0,positions:[],trades:[],lastEntry:{}}}}
+let state=loadState();
+function saveState(){const tmp=DB+'.tmp';fs.writeFileSync(tmp,JSON.stringify(state,null,2));fs.renameSync(tmp,DB)}
+async function getJson(url){const r=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error(`Binance HTTP ${r.status}`);return r.json()}
+function mapRows(rows){return rows.map(c=>({openTime:c[0],open:+c[1],high:+c[2],low:+c[3],close:+c[4],volume:+c[5],closeTime:c[6]}))}
+function ema(v,p){if(v.length<p)return null;let x=v.slice(0,p).reduce((a,b)=>a+b,0)/p,k=2/(p+1);for(let i=p;i<v.length;i++)x=v[i]*k+x*(1-k);return x}
+function rsi(v,p=14){if(v.length<=p)return null;let g=0,l=0;for(let i=1;i<=p;i++){let d=v[i]-v[i-1];if(d>0)g+=d;else l-=d}g/=p;l/=p;for(let i=p+1;i<v.length;i++){let d=v[i]-v[i-1];g=(g*(p-1)+Math.max(d,0))/p;l=(l*(p-1)+Math.max(-d,0))/p}return l===0?100:100-100/(1+g/l)}
+function atr(cs,p=14){if(cs.length<p+1)return null;let a=[];for(let i=1;i<cs.length;i++){let c=cs[i],q=cs[i-1];a.push(Math.max(c.high-c.low,Math.abs(c.high-q.close),Math.abs(c.low-q.close)))}return a.slice(-p).reduce((x,y)=>x+y,0)/p}
+function analyze(cs){let closed=cs.filter(c=>c.closeTime<Date.now()),v=closed.map(c=>c.close);if(closed.length<205)return {ready:false,count:closed.length};let z=closed.at(-1);return {ready:true,close:z.close,previousClose:closed.at(-2).close,ema20:ema(v,20),ema50:ema(v,50),ema200:ema(v,200),rsi14:rsi(v),atr14:atr(closed),candleTime:z.closeTime}}
+function signal(a15,a5,a3,price){if(!a15.ready||!a5.ready||!a3.ready)return {status:'DATA_WAIT',label:'بانتظار البيانات',reason:'بيانات غير كافية'};let up=a15.close>a15.ema50&&a15.ema50>a15.ema200,down=a15.close<a15.ema50&&a15.ema50<a15.ema200,ok5=a5.close>a5.ema20&&a5.ema20>a5.ema50&&a5.rsi14>=50&&a5.rsi14<=70,bad5=a5.close<a5.ema20&&a5.ema20<a5.ema50&&a5.rsi14<50,entry=a3.close>a3.ema20&&a3.close>a3.previousClose&&a3.rsi14>=50&&a3.rsi14<=70;let status=up&&ok5&&entry?'BUY':down||bad5?'NO_BUY':'WAIT',dist=a3.atr14*1.5;return {status,label:status==='BUY'?'إشارة شراء تجريبية':status==='NO_BUY'?'تجنب الشراء':'انتظار',reason:status==='BUY'?'توافق الفريمات الثلاثة':status==='NO_BUY'?'الاتجاه أو التأكيد لا يدعم الشراء':'ننتظر اكتمال شروط الدخول',checks:{trend15:up?'صاعد':down?'هابط':'محايد',confirm5:ok5?'إيجابي':bad5?'سلبي':'غير مؤكد',entry3:entry?'متحقق':'غير متحقق',rsi15:a15.rsi14,rsi5:a5.rsi14,rsi3:a3.rsi14},risk:{maxLossUsd:.5,stopPrice:price-dist,targetPrice:price+2*dist,quantityBase:dist>0?.5/dist:null,notionalUsd:dist>0?.5/dist*price:null,riskReward:'1:2'},candleTimes:{m15:a15.candleTime,m5:a5.candleTime,m3:a3.candleTime}}}
+async function getAsset(symbol){let [t,k15,k5,k3]=await Promise.all([getJson(`${BINANCE}/api/v3/ticker/24hr?symbol=${symbol}`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=15m&limit=250`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=5m&limit=250`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=3m&limit=250`)]);let p=+t.lastPrice,a15=analyze(mapRows(k15)),a5=analyze(mapRows(k5)),a3=analyze(mapRows(k3));return {symbol,price:p,changePercent24h:+t.priceChangePercent,high24h:+t.highPrice,low24h:+t.lowPrice,analysis:{'15m':a15,'5m':a5,'3m':a3},signal:signal(a15,a5,a3,p)}}
+function markAndExecute(assets){let now=Date.now();for(const a of assets){let pos=state.positions.find(p=>p.symbol===a.symbol);if(pos){let exit=null;if(a.price<=pos.stopPrice)exit={price:pos.stopPrice,why:'وقف الخسارة'};else if(a.price>=pos.targetPrice)exit={price:pos.targetPrice,why:'تحقق الهدف'};if(exit){let pnl=(exit.price-pos.entryPrice)*pos.quantity;state.cash+=pos.notional+ pnl;state.realizedPnl+=pnl;state.trades.unshift({...pos,status:pnl>=0?'WIN':'LOSS',exitPrice:exit.price,exitTime:now,pnl,exitReason:exit.why});state.positions=state.positions.filter(x=>x!==pos);}}
+ if(a.signal.status==='BUY'&&!state.positions.some(p=>p.symbol===a.symbol)&&state.lastEntry[a.symbol]!==a.signal.candleTimes?.m3){let stop=a.signal.risk?.stopPrice,dist=a.price-stop;if(dist>0&&Number.isFinite(dist)){let riskQty=.5/dist,affordable=state.cash/a.price,qty=Math.min(riskQty,affordable),notional=qty*a.price;if(qty>0&&notional>=5){let actualRisk=qty*dist;state.cash-=notional;let p={id:`${a.symbol}-${now}`,symbol:a.symbol,entryPrice:a.price,stopPrice:stop,targetPrice:a.price+2*dist,quantity:qty,notional,riskUsd:actualRisk,openedAt:now,entryCandle:a.signal.candleTimes?.m3};state.positions.push(p);state.lastEntry[a.symbol]=p.entryCandle;}}}}
+ saveState()}
+function portfolio(){let unrealized=state.positions.reduce((s,p)=>s+(p.markPrice?p.markPrice-p.entryPrice:0)*p.quantity,0);return {initialCapital:state.initialCapital,cash:state.cash,realizedPnl:state.realizedPnl,openCount:state.positions.length,closedCount:state.trades.length,winRate:state.trades.length?state.trades.filter(t=>t.pnl>0).length/state.trades.length*100:0,positions:state.positions,trades:state.trades.slice(0,100),equity:state.cash+state.positions.reduce((s,p)=>s+p.notional,0)+unrealized}}
+async function market(){let assets=await Promise.all(SYMBOLS.map(getAsset));for(let p of state.positions){let a=assets.find(x=>x.symbol===p.symbol);if(a)p.markPrice=a.price}markAndExecute(assets);return {source:'Binance Spot public market data',updatedAt:new Date().toISOString(),capitalUsd:50,maxRiskUsd:.5,mode:'paper_only',assets,portfolio:portfolio()}}
+async function backtest(res){try{let symbol=(new URL(res.req.url,'http://x')).searchParams.get('symbol')||'BTCUSDT';if(!SYMBOLS.includes(symbol))throw Error('رمز غير مدعوم');let [r15,r5,r3]=await Promise.all(['15m','5m','3m'].map(tf=>getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=1000`)));let c15=mapRows(r15),c5=mapRows(r5),c3=mapRows(r3),trades=[],lastSignal=0;for(let i=205;i<c3.length-2;i++){let c=c3[i];if(c.closeTime>=Date.now())continue;let x15=c15.filter(x=>x.closeTime<=c.closeTime),x5=c5.filter(x=>x.closeTime<=c.closeTime),x3=c3.slice(0,i+1);if(x15.length<205||x5.length<205)continue;let a15=analyzeAt(x15),a5=analyzeAt(x5),a3=analyzeAt(x3),s=signal(a15,a5,a3,c.close);if(s.status!=='BUY'||lastSignal===c.closeTime)continue;lastSignal=c.closeTime;let entry=c3[i+1].open,dist=a3.atr14*1.5;if(!(dist>0))continue;let stop=entry-dist,target=entry+2*dist,exit=null;for(let j=i+1;j<c3.length;j++){let q=c3[j];if(q.low<=stop){exit={price:stop,time:q.closeTime,reason:'STOP'};break}if(q.high>=target){exit={price:target,time:q.closeTime,reason:'TARGET'};break}}if(!exit)continue;let qty=.5/dist,pnl=(exit.price-entry)*qty;trades.push({entryTime:c.closeTime,exitTime:exit.time,entry,exit:exit.price,reason:exit.reason,pnl,risk:.5});i+=Math.max(0,Math.floor((exit.time-c.closeTime)/180000));}
+ let wins=trades.filter(t=>t.pnl>0).length,net=trades.reduce((s,t)=>s+t.pnl,0),grossWin=trades.filter(t=>t.pnl>0).reduce((s,t)=>s+t.pnl,0),grossLoss=-trades.filter(t=>t.pnl<0).reduce((s,t)=>s+t.pnl,0);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({symbol,intervals:['15m','5m','3m'],candles:{'15m':c15.length,'5m':c5.length,'3m':c3.length},trades:trades.length,wins,losses:trades.length-wins,winRate:trades.length?wins/trades.length*100:0,netPnl:net,profitFactor:grossLoss?grossWin/grossLoss:null,assumptions:'دخول عند افتتاح الشمعة التالية؛ وقف ATR×1.5؛ هدف 2R؛ مخاطرة نظرية 0.50$؛ لا تشمل الرسوم والانزلاق؛ إذا لمس الوقف والهدف في الشمعة نفسها يُحتسب الوقف أولاً.',sample:trades.slice(-30)}));}catch(e){res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'تعذر تنفيذ الاختبار',detail:e.message}))}}
+function analyzeAt(cs){let v=cs.map(x=>x.close),z=cs.at(-1);return {ready:cs.length>=205,close:z.close,previousClose:cs.at(-2).close,ema20:ema(v,20),ema50:ema(v,50),ema200:ema(v,200),rsi14:rsi(v),atr14:atr(cs),candleTime:z.closeTime}}
+function send(res,obj,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj))}
+http.createServer(async(req,res)=>{let u=new URL(req.url,'http://localhost');if(u.pathname==='/api/market'){try{send(res,await market())}catch(e){send(res,{error:'تعذر جلب بيانات Binance',detail:e.message},502)}return}if(u.pathname==='/api/portfolio'){send(res,portfolio());return}if(u.pathname==='/api/backtest'){await backtest(res);return}if(u.pathname==='/api/reset'&&req.method==='POST'){state={initialCapital:50,cash:50,realizedPnl:0,positions:[],trades:[],lastEntry:{}};saveState();send(res,{ok:true,portfolio:portfolio()});return}let p=u.pathname==='/'?'/index.html':decodeURIComponent(u.pathname),f=path.resolve(ROOT,'.'+p);if(!f.startsWith(ROOT+path.sep)){res.writeHead(403);res.end();return}fs.readFile(f,(e,d)=>{if(e){res.writeHead(404);res.end('Not found')}else{res.writeHead(200,{'Content-Type':MIME[path.extname(f)]||'application/octet-stream'});res.end(d)}})}).listen(PORT,'0.0.0.0',()=>console.log(`Paper trading server on ${PORT}`));

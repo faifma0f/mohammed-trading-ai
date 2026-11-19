@@ -1,24 +1,12 @@
-<!doctype html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#10131d">
-<title>Mohammed Trading AI</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
-</head>
-<body>
-<header class="top"><div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div><span class="pill"><i></i> تداول تجريبي فقط</span></header>
-<main>
-<section class="intro"><div><p class="eyebrow">محرك الاستراتيجية</p><h1>متعدد الفريمات</h1><p class="muted">15 دقيقة للاتجاه · 5 دقائق للتأكيد · 3 دقائق لتوقيت الدخول</p></div><div class="timeframe"><span>رأس المال التجريبي</span><strong>$50</strong></div></section>
-<section class="notice"><strong>محاكاة وتحليل فقط — لا يتم إرسال أوامر إلى Binance</strong><p>بيانات السوق عامة. لا توجد مفاتيح API أو صلاحية تداول أو سحب. إشارة الشراء ليست ضماناً للربح، ويجب اختبار النتائج قبل أي استخدام بأموال حقيقية.</p></section>
-<section class="stats">
-<article class="card"><span>حد المخاطرة للصفقة</span><strong>$0.50</strong><small>1% من رأس المال التجريبي</small></article>
-<article class="card"><span>حالة اتصال السوق</span><strong id="connection" class="warn">جارٍ الاتصال</strong><small id="updated">بانتظار التحديث</small></article>
-<article class="card"><span>الصفقات المنفذة</span><strong>0</strong><small>لا يوجد تنفيذ حقيقي</small></article>
-<article class="card"><span>وضع النظام</span><strong class="safe">Paper</strong><small>مراقبة وإشارات فقط</small></article>
-</section>
-<section class="panel"><div class="panel-head"><div><h2>مراقبة السوق</h2><p class="muted">Binance Spot · مقابل USDT</p></div><span class="tag">تحديث كل 60 ثانية</span></div>
-<div class="table-wrap"><table><thead><tr><th>العملة</th><th>السعر</th><th>تغير 24h</th><th>الإشارة</th></tr></thead><tbody id="marketRows"><tr><td colspan="4" class="loading">جارٍ تحميل البيانات...</td></tr></tbody></table></div><p id="error" class="error" hidden></p></section>
-<section class="panel"><div class="panel-head"><div><h2>تحليل الفريمات</h2><p class="muted">EMA + RSI · آخر شموع مغلقة</p></div></div><div id="analysisCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
-<section class="panel"><div class="panel-head"><div><h2>إدارة المخاطر — لكل إشارة شراء</h2><p class="muted">وقف خسارة مبني على ATR لفريم 3 دقائق، وهدف نظري 2R</p></div></div><div id="riskCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
-<footer>Mohammed Trading AI <span>نسخة تجريبية · لا تنفذ صفقات</span></footer>
-</main>
-</body></html>
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#10131d"><title>Mohammed Trading AI</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head><body>
+<header class="top"><div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div><span class="pill"><i></i> تداول تجريبي فقط</span></header><main>
+<section class="intro"><div><p class="eyebrow">محرك الاستراتيجية V4</p><h1>متعدد الفريمات</h1><p class="muted">15 دقيقة للاتجاه · 5 دقائق للتأكيد · 3 دقائق للدخول</p></div><div class="timeframe"><span>رأس المال الابتدائي</span><strong>$50</strong></div></section>
+<section class="notice"><strong>محاكاة فقط — لا يتم إرسال أوامر إلى Binance</strong><p>الصفقات الافتراضية تحاكي التنفيذ بناءً على بيانات Spot العامة. حد المخاطرة المستهدف 0.50$، وقد يقل حجم المركز إذا لم يكفِ الرصيد. لا توجد مفاتيح تداول أو سحب.</p></section>
+<section class="stats"><article class="card"><span>الرصيد النقدي</span><strong id="cash">$50.00</strong><small>غير المستثمر</small></article><article class="card"><span>صافي المحقق</span><strong id="realized">$0.00</strong><small>الصفقات المغلقة</small></article><article class="card"><span>الصفقات المفتوحة</span><strong id="openCount">0</strong><small>محاكاة</small></article><article class="card"><span>نسبة الفوز</span><strong id="winRate">—</strong><small id="closedCount">0 صفقة مغلقة</small></article></section>
+<section class="panel"><div class="panel-head"><div><h2>مراقبة السوق</h2><p class="muted">Binance Spot · مقابل USDT</p></div><span class="tag" id="connection">جارٍ الاتصال</span></div><div class="table-wrap"><table><thead><tr><th>العملة</th><th>السعر</th><th>تغير 24h</th><th>الإشارة</th></tr></thead><tbody id="marketRows"><tr><td colspan="4" class="loading">جارٍ تحميل البيانات...</td></tr></tbody></table></div><p id="error" class="error" hidden></p></section>
+<section class="panel"><div class="panel-head"><div><h2>تحليل الفريمات</h2><p class="muted">EMA 20/50/200 + RSI 14 · شموع مغلقة</p></div></div><div id="analysisCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
+<section class="panel"><div class="panel-head"><div><h2>الصفقات المفتوحة</h2><p class="muted">تُفتح تلقائياً عند اكتمال شروط الشراء</p></div></div><div id="positions" class="asset-analysis"><p class="muted">لا توجد صفقات مفتوحة حالياً.</p></div></section>
+<section class="panel"><div class="panel-head"><div><h2>سجل الصفقات</h2><p class="muted">آخر 100 صفقة افتراضية</p></div></div><div class="table-wrap"><table><thead><tr><th>العملة</th><th>الدخول</th><th>الخروج</th><th>النتيجة</th><th>السبب</th></tr></thead><tbody id="tradeRows"><tr><td colspan="5" class="muted">لا توجد صفقات مغلقة بعد.</td></tr></tbody></table></div></section>
+<section class="panel"><div class="panel-head"><div><h2>اختبار تاريخي (Backtesting)</h2><p class="muted">حتى 1000 شمعة لكل فريم من Binance</p></div><button id="runBacktest">تشغيل الاختبار</button></div><label for="btSymbol">العملة</label><select id="btSymbol"><option value="BTCUSDT">BTC / USDT</option><option value="ETHUSDT">ETH / USDT</option><option value="SOLUSDT">SOL / USDT</option></select><div id="backtestResult" class="muted">لم يتم تشغيل الاختبار بعد.</div><p class="disclaimer">الاختبار التاريخي تقريبي وليس ضماناً للمستقبل. لا يشمل رسوم التداول أو الانزلاق السعري. إذا لمس الوقف والهدف داخل الشمعة نفسها، يحتسب الاختبار الوقف أولاً.</p></section>
+<section class="panel danger-zone"><h2>إعادة ضبط المحفظة التجريبية</h2><p class="muted">تحذف سجل الصفقات وتعيد الرصيد إلى 50 دولاراً.</p><button class="secondary" id="resetPaper">إعادة الضبط</button><span id="resetMsg" class="muted"></span></section>
+<footer>Mohammed Trading AI <span>V4 · Paper Trading · لا تنفيذ حقيقي</span></footer></main></body></html>
