@@ -147,7 +147,12 @@ async function runBacktest() {
   try {
     const r = await fetch(`/api/backtest?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
     const data = await r.json();
-    if (!r.ok) throw new Error(data.detail || data.error || 'فشل الاختبار');
+    if (!r.ok) {
+  throw new Error(
+    (data.detail || data.error || 'فشل الاختبار') +
+    '\n' + (data.trace || '')
+  );
+}
     if (data.version !== 'V6' || !Number.isFinite(Number(data.netPnl))) {
       throw new Error('استجابة الخادم غير متوافقة. تأكد من نشر ملفات V6 الأربعة.');
     }
