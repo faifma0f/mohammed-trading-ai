@@ -114,36 +114,42 @@ async function getHistorical(symbol,interval,start,end){
   const byTime=new Map();for(const c of all)if(c.closeTime<=end)byTime.set(c.openTime,c);return [...byTime.values()].sort((a,b)=>a.openTime-b.openTime);
 }
 function latestIndex(cs,t,p){while(p.i+1<cs.length&&cs[p.i+1].closeTime<=t)p.i++;return p.i;}
-function scoreAt(d,h4,h1){if(!d||!h4||!h1)return {score:0,ok:false};let score=0;
+function scoreAt(d,h4,h1,opts={}){if(!d||!h4||!h1)return {score:0,ok:false};let score=0;const rsiMin=opts.rsiMin??50,rsiMax=opts.rsiMax??72,volumeMin=opts.volumeMin??1.3,scoreMin=opts.scoreMin??75;
   if(d.close>d.ema50&&d.ema50>d.ema200)score+=25;
   if(h4.close>h4.ema20&&h4.ema20>h4.ema50)score+=25;
   if(h1.macdHist>0&&h1.macdLine>h1.macdSignal)score+=10;
-  if(h1.rsi14>=50&&h1.rsi14<=72)score+=10;
+  if(h1.rsi14>=rsiMin&&h1.rsi14<=rsiMax)score+=10;
   if(h1.breakout||h1.reclaim||h1.bullishEngulf||h4.breakout||h4.reclaim)score+=15;
-  if(h1.relVolume>=1.3)score+=5;
+  if(h1.relVolume>=volumeMin)score+=5;
   if(h1.quoteVolume>=50000)score+=10;
   const hard=d.close>d.ema50&&d.ema50>d.ema200&&h4.close>h4.ema20&&h4.ema20>h4.ema50&&h1.quoteVolume>=50000;
-  return {score,ok:score>=75&&hard};
+  return {score,ok:score>=scoreMin&&hard};
 }
-function simulate(cs,startIndex,entry){const qty=ALLOCATION/entry,stop=entry*(1-STOP_PCT),tp1=entry*(1+TP1_PCT),tp2=entry*(1+TP2_PCT);let rem=qty,pnl=0,fees=entry*qty*FEE,partial=false,activeStop=stop,reason='DATA_END',exitTime=cs.at(-1).closeTime,last=startIndex;
+function simulate(cs,startIndex,entry,opts={}){const stopPct=opts.stopPct??STOP_PCT,tp1Pct=opts.tp1Pct??TP1_PCT,tp2Pct=opts.tp2Pct??TP2_PCT,tp1SellPct=opts.tp1SellPct??0.5;const qty=ALLOCATION/entry,stop=entry*(1-stopPct),tp1=entry*(1+tp1Pct),tp2=entry*(1+tp2Pct);let rem=qty,pnl=0,fees=entry*qty*FEE,partial=false,activeStop=stop,reason='DATA_END',exitTime=cs.at(-1).closeTime,last=startIndex;
   function realize(raw,q){const fill=raw*(1-SLIPPAGE),fee=fill*q*FEE;pnl+=(fill-entry)*q-fee;fees+=fee;}
   for(let j=startIndex;j<cs.length;j++){const c=cs[j];last=j;
     if(c.low<=activeStop){const fill=c.open<activeStop?c.open:activeStop;realize(fill,rem);rem=0;reason=partial?'BREAKEVEN_AFTER_TP1':'STOP_LOSS';exitTime=c.closeTime;break;}
-    if(!partial&&c.high>=tp1){const fill=c.open>tp1?c.open:tp1,half=rem/2;realize(fill,half);rem-=half;partial=true;activeStop=entry;if(c.low<=entry){realize(entry,rem);rem=0;reason='BREAKEVEN_AFTER_TP1';exitTime=c.closeTime;break;}}
+    if(!partial&&c.high>=tp1){const fill=c.open>tp1?c.open:tp1,half=rem*tp1SellPct;realize(fill,half);rem-=half;partial=true;activeStop=entry;if(c.low<=entry){realize(entry,rem);rem=0;reason='BREAKEVEN_AFTER_TP1';exitTime=c.closeTime;break;}}
     if(partial&&c.high>=tp2){const fill=c.open>tp2?c.open:tp2;realize(fill,rem);rem=0;reason='TP2';exitTime=c.closeTime;break;}
   }
   if(rem>0){realize(cs[last].close,rem);rem=0;}return {entryTime:cs[startIndex].openTime,exitTime,entry,stop,tp1,tp2,pnl,fees,reason,partial,holdingHours:(exitTime-cs[startIndex].openTime)/3600000};}
 function summarize(trades,symbol,start,end){const wins=trades.filter(t=>t.pnl>0),loss=trades.filter(t=>t.pnl<0),gw=wins.reduce((s,t)=>s+t.pnl,0),gl=-loss.reduce((s,t)=>s+t.pnl,0);let equity=CAPITAL,peak=CAPITAL,dd=0;for(const t of trades){equity+=t.pnl;peak=Math.max(peak,equity);dd=Math.max(dd,peak?(peak-equity)/peak*100:0);}return {symbol,period:{start:new Date(start).toISOString(),end:new Date(end).toISOString()},trades:trades.length,wins:wins.length,losses:loss.length,winRate:trades.length?wins.length/trades.length*100:0,netPnl:trades.reduce((s,t)=>s+t.pnl,0),profitFactor:gl?gw/gl:(gw?null:0),expectancy:trades.length?trades.reduce((s,t)=>s+t.pnl,0)/trades.length:0,maxDrawdownPercent:dd,avgHoldingHours:trades.length?trades.reduce((s,t)=>s+t.holdingHours,0)/trades.length:0,stopExits:trades.filter(t=>t.reason==='STOP_LOSS').length,tp1Hits:trades.filter(t=>t.partial).length,tp2Exits:trades.filter(t=>t.reason==='TP2').length,breakevenExits:trades.filter(t=>t.reason==='BREAKEVEN_AFTER_TP1').length,totalFees:trades.reduce((s,t)=>s+t.fees,0),sample:trades.slice(-20)};}
 async function backtest(req,res){try{
-  const u=new URL(req.url,'http://localhost'),symbol=(u.searchParams.get('symbol')||'BTCUSDT').toUpperCase();if(!/^[A-Z0-9]{2,20}USDT$/.test(symbol))throw new Error('رمز غير صحيح');
-  const end=Date.now()-60000,start=end-BACKTEST_DAYS*86400000;
-  // Three modest datasets only: daily, 4-hour and hourly. Download sequentially to reduce memory and rate-limit pressure.
+  const u=new URL(req.url,'http://localhost'),symbol=(u.searchParams.get('symbol')||'BTCUSDT').toUpperCase();
+  if(!/^[A-Z0-9]{2,20}USDT$/.test(symbol))throw new Error('رمز غير صحيح');
+  const number=(key,def,min,max)=>{const raw=u.searchParams.get(key);const n=raw===null?def:Number(raw);if(!Number.isFinite(n)||n<min||n>max)throw new Error(`قيمة ${key} خارج النطاق`);return n;};
+  const days=number('days',365,30,365),stopPct=number('sl',10,0.1,30)/100,tp1Pct=number('tp1',10,0.1,50)/100,tp2Pct=number('tp2',20,0.2,100)/100;
+  const rsiMin=number('rsiMin',50,1,99),rsiMax=number('rsiMax',72,2,100),volumeMin=number('volume',1.3,0.1,10),scoreMin=number('score',75,25,100),tp1SellPct=number('tp1Sell',50,1,99)/100;
+  if(rsiMin>=rsiMax)throw new Error('يجب أن يكون RSI الأدنى أقل من الأعلى');if(tp1Pct>=tp2Pct)throw new Error('يجب أن يكون TP1 أقل من TP2');
+  const end=Date.now()-60000,start=end-days*86400000;
   const d=await getHistorical(symbol,'1d',start-210*86400000,end);await sleep(150);const h4=await getHistorical(symbol,'4h',start-40*86400000,end);await sleep(150);const h1=await getHistorical(symbol,'1h',start-10*86400000,end);
-  if(h1.length<500)throw new Error(`بيانات الساعة غير كافية: ${h1.length} شمعة`);
+  if(h1.length<250)throw new Error(`بيانات الساعة غير كافية: ${h1.length} شمعة`);
   const sd=buildSeries(d),s4=buildSeries(h4),s1=buildSeries(h1),ptr={d:-1,h4:-1},trades=[],rejected={data:0,daily:0,fourHour:0,score:0};let candidateSignals=0,nextEntry=0;
-  for(let i=205;i<h1.length-1;i++){const c=h1[i];if(c.closeTime<start||c.closeTime<nextEntry)continue;ptr.d=latestIndex(d,c.closeTime,{i:ptr.d});ptr.h4=latestIndex(h4,c.closeTime,{i:ptr.h4});const ad=sd[ptr.d],a4=s4[ptr.h4],a1=s1[i];if(!ad||!a4||!a1){rejected.data++;continue;}if(!(ad.close>ad.ema50&&ad.ema50>ad.ema200)){rejected.daily++;continue;}if(!(a4.close>a4.ema20&&a4.ema20>a4.ema50)){rejected.fourHour++;continue;}const decision=scoreAt(ad,a4,a1);if(!decision.ok){rejected.score++;continue;}candidateSignals++;const entry=h1[i+1].open*(1+SLIPPAGE),trade=simulate(h1,i+1,entry);trades.push(trade);nextEntry=trade.exitTime||c.closeTime;}
-  const result=summarize(trades,symbol,start,end);send(res,{version:'V7',...result,intervals:INTERVALS,candleCounts:{'1d':d.length,'4h':h4.length,'1h':h1.length},diagnostics:{candidateSignals,rejected},costs:{feePerSidePercent:FEE*100,slippagePerSidePercent:SLIPPAGE*100},strategy:{allocationUsd:ALLOCATION,stopLossPercent:10,tp1Percent:20,tp1SellPercent:50,tp2Percent:30,scoreThreshold:75,weights:{dailyTrend:25,fourHourTrend:25,macd:10,rsi:10,pricePattern:15,relativeVolume:5,liquidityProxy:10}},limitations:['الاختبار لزوج واحد في كل تشغيل، ولا يحاكي محفظة متعددة الأزواج أو ثلاثة مراكز متزامنة.','الاختبار التاريخي يستخدم حجم الشموع كبديل تقريبي للسيولة؛ لا تتوفر بيانات دفتر أوامر تاريخية موثوقة لسنة كاملة.','قائمة أفضل 10 أزواج تُحدّث في التداول الحي كل 4 ساعات؛ الاختبار لا يعيد بناء ترتيب أفضل 10 تاريخياً.','Spot Long فقط، ورسوم مفترضة 0.10% وانزلاق 0.05% لكل جهة؛ عدّلها حسب فئة رسوم Binance الفعلية.','TP1 وTP2 محسوبان من مبلغ الصفقة الأصلي: بيع نصف الكمية عند +20% ثم تصفية الباقي عند +30%.']});
- }catch(e){console.error('BACKTEST_ERROR',e.stack||e);send(res,{error:'تعذر تنفيذ الاختبار السنوي',detail:e.message,trace:e.stack||String(e)},502);}}
+  const opts={stopPct,tp1Pct,tp2Pct,tp1SellPct};
+  for(let i=205;i<h1.length-1;i++){const c=h1[i];if(c.closeTime<start||c.closeTime<nextEntry)continue;ptr.d=latestIndex(d,c.closeTime,{i:ptr.d});ptr.h4=latestIndex(h4,c.closeTime,{i:ptr.h4});const ad=sd[ptr.d],a4=s4[ptr.h4],a1=s1[i];if(!ad||!a4||!a1){rejected.data++;continue;}if(!(ad.close>ad.ema50&&ad.ema50>ad.ema200)){rejected.daily++;continue;}if(!(a4.close>a4.ema20&&a4.ema20>a4.ema50)){rejected.fourHour++;continue;}const decision=scoreAt(ad,a4,a1,{rsiMin,rsiMax,volumeMin,scoreMin});if(!decision.ok){rejected.score++;continue;}candidateSignals++;const entry=h1[i+1].open*(1+SLIPPAGE),trade=simulate(h1,i+1,entry,opts);trades.push(trade);nextEntry=trade.exitTime||c.closeTime;}
+  const result=summarize(trades,symbol,start,end);send(res,{version:'V8',...result,intervals:INTERVALS,settings:{days,slPercent:stopPct*100,tp1Percent:tp1Pct*100,tp2Percent:tp2Pct*100,tp1SellPercent:tp1SellPct*100,rsiMin,rsiMax,relativeVolumeMin:volumeMin,scoreThreshold:scoreMin},candleCounts:{'1d':d.length,'4h':h4.length,'1h':h1.length},diagnostics:{candidateSignals,rejected},costs:{feePerSidePercent:FEE*100,slippagePerSidePercent:SLIPPAGE*100},strategy:{allocationUsd:ALLOCATION,stopLossPercent:stopPct*100,tp1Percent:tp1Pct*100,tp1SellPercent:tp1SellPct*100,tp2Percent:tp2Pct*100,scoreThreshold:scoreMin,weights:{dailyTrend:25,fourHourTrend:25,macd:10,rsi:10,pricePattern:15,relativeVolume:5,liquidityProxy:10}},limitations:['الاختبار لزوج واحد في كل تشغيل، ولا يحاكي محفظة متعددة الأزواج أو ثلاثة مراكز متزامنة.','الفريمات المستخدمة في الاختبار هي اليومي و4 ساعات والساعة؛ لم يتم تحويل محرك الإشارات إلى فريمات 15 و5 و3 دقائق.','الاختبار يستخدم شموع Binance التاريخية، ولا يعيد بناء دفتر الأوامر أو ترتيب أفضل 10 أزواج تاريخياً.','Spot Long فقط، ورسوم مفترضة 0.10% وانزلاق 0.05% لكل جهة.','تغيير هذه الإعدادات يؤثر على Backtest فقط ولا يغير Paper Trading الحالي.']});
+ }catch(e){console.error('BACKTEST_ERROR',e.stack||e);send(res,{error:'تعذر تنفيذ الاختبار التاريخي',detail:e.message},400);}}
+
 function send(res,obj,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj));}
 http.createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
   if(u.pathname==='/health'){send(res,{ok:true,version:'V7',timeframes:INTERVALS});return;}
@@ -153,4 +159,4 @@ http.createServer(async(req,res)=>{const u=new URL(req.url,'http://localhost');
   if(u.pathname==='/api/reset'&&req.method==='POST'){state=freshState();saveState();send(res,{ok:true,portfolio:portfolio()});return;}
   const p=u.pathname==='/'?'/index.html':decodeURIComponent(u.pathname),f=path.resolve(ROOT,'.'+p);if(!f.startsWith(ROOT+path.sep)){res.writeHead(403);res.end();return;}
   fs.readFile(f,(e,d)=>{if(e){res.writeHead(404);res.end('Not found');}else{res.writeHead(200,{'Content-Type':MIME[path.extname(f)]||'application/octet-stream'});res.end(d);}});
-}).listen(PORT,'0.0.0.0',()=>console.log(`Mohammed Trading AI V7 Paper Trading on ${PORT}`));
+}).listen(PORT,'0.0.0.0',()=>console.log(`Mohammed Trading AI V7 Paper Trading + V8 Backtest on ${PORT}`));
