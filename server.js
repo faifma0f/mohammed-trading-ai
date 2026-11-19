@@ -1,26 +1,517 @@
-const http=require('http'),fs=require('fs'),path=require('path');
-const ROOT=__dirname,PORT=process.env.PORT||8080,BINANCE='https://data-api.binance.vision';
-const SYMBOLS=['BTCUSDT','ETHUSDT','SOLUSDT'];
-const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8'};
-const DB=path.join(ROOT,'paper-state.json');
-function loadState(){try{return JSON.parse(fs.readFileSync(DB,'utf8'))}catch{return {initialCapital:50,cash:50,realizedPnl:0,positions:[],trades:[],lastEntry:{}}}}
-let state=loadState();
-function saveState(){const tmp=DB+'.tmp';fs.writeFileSync(tmp,JSON.stringify(state,null,2));fs.renameSync(tmp,DB)}
-async function getJson(url){const r=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(15000)});if(!r.ok)throw Error(`Binance HTTP ${r.status}`);return r.json()}
-function mapRows(rows){return rows.map(c=>({openTime:c[0],open:+c[1],high:+c[2],low:+c[3],close:+c[4],volume:+c[5],closeTime:c[6]}))}
-function ema(v,p){if(v.length<p)return null;let x=v.slice(0,p).reduce((a,b)=>a+b,0)/p,k=2/(p+1);for(let i=p;i<v.length;i++)x=v[i]*k+x*(1-k);return x}
-function rsi(v,p=14){if(v.length<=p)return null;let g=0,l=0;for(let i=1;i<=p;i++){let d=v[i]-v[i-1];if(d>0)g+=d;else l-=d}g/=p;l/=p;for(let i=p+1;i<v.length;i++){let d=v[i]-v[i-1];g=(g*(p-1)+Math.max(d,0))/p;l=(l*(p-1)+Math.max(-d,0))/p}return l===0?100:100-100/(1+g/l)}
-function atr(cs,p=14){if(cs.length<p+1)return null;let a=[];for(let i=1;i<cs.length;i++){let c=cs[i],q=cs[i-1];a.push(Math.max(c.high-c.low,Math.abs(c.high-q.close),Math.abs(c.low-q.close)))}return a.slice(-p).reduce((x,y)=>x+y,0)/p}
-function analyze(cs){let closed=cs.filter(c=>c.closeTime<Date.now()),v=closed.map(c=>c.close);if(closed.length<205)return {ready:false,count:closed.length};let z=closed.at(-1);return {ready:true,close:z.close,previousClose:closed.at(-2).close,ema20:ema(v,20),ema50:ema(v,50),ema200:ema(v,200),rsi14:rsi(v),atr14:atr(closed),candleTime:z.closeTime}}
-function signal(a15,a5,a3,price){if(!a15.ready||!a5.ready||!a3.ready)return {status:'DATA_WAIT',label:'بانتظار البيانات',reason:'بيانات غير كافية'};let up=a15.close>a15.ema50&&a15.ema50>a15.ema200,down=a15.close<a15.ema50&&a15.ema50<a15.ema200,ok5=a5.close>a5.ema20&&a5.ema20>a5.ema50&&a5.rsi14>=50&&a5.rsi14<=70,bad5=a5.close<a5.ema20&&a5.ema20<a5.ema50&&a5.rsi14<50,entry=a3.close>a3.ema20&&a3.close>a3.previousClose&&a3.rsi14>=50&&a3.rsi14<=70;let status=up&&ok5&&entry?'BUY':down||bad5?'NO_BUY':'WAIT',dist=a3.atr14*1.5;return {status,label:status==='BUY'?'إشارة شراء تجريبية':status==='NO_BUY'?'تجنب الشراء':'انتظار',reason:status==='BUY'?'توافق الفريمات الثلاثة':status==='NO_BUY'?'الاتجاه أو التأكيد لا يدعم الشراء':'ننتظر اكتمال شروط الدخول',checks:{trend15:up?'صاعد':down?'هابط':'محايد',confirm5:ok5?'إيجابي':bad5?'سلبي':'غير مؤكد',entry3:entry?'متحقق':'غير متحقق',rsi15:a15.rsi14,rsi5:a5.rsi14,rsi3:a3.rsi14},risk:{maxLossUsd:.5,stopPrice:price-dist,targetPrice:price+2*dist,quantityBase:dist>0?.5/dist:null,notionalUsd:dist>0?.5/dist*price:null,riskReward:'1:2'},candleTimes:{m15:a15.candleTime,m5:a5.candleTime,m3:a3.candleTime}}}
-async function getAsset(symbol){let [t,k15,k5,k3]=await Promise.all([getJson(`${BINANCE}/api/v3/ticker/24hr?symbol=${symbol}`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=15m&limit=250`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=5m&limit=250`),getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=3m&limit=250`)]);let p=+t.lastPrice,a15=analyze(mapRows(k15)),a5=analyze(mapRows(k5)),a3=analyze(mapRows(k3));return {symbol,price:p,changePercent24h:+t.priceChangePercent,high24h:+t.highPrice,low24h:+t.lowPrice,analysis:{'15m':a15,'5m':a5,'3m':a3},signal:signal(a15,a5,a3,p)}}
-function markAndExecute(assets){let now=Date.now();for(const a of assets){let pos=state.positions.find(p=>p.symbol===a.symbol);if(pos){let exit=null;if(a.price<=pos.stopPrice)exit={price:pos.stopPrice,why:'وقف الخسارة'};else if(a.price>=pos.targetPrice)exit={price:pos.targetPrice,why:'تحقق الهدف'};if(exit){let pnl=(exit.price-pos.entryPrice)*pos.quantity;state.cash+=pos.notional+ pnl;state.realizedPnl+=pnl;state.trades.unshift({...pos,status:pnl>=0?'WIN':'LOSS',exitPrice:exit.price,exitTime:now,pnl,exitReason:exit.why});state.positions=state.positions.filter(x=>x!==pos);}}
- if(a.signal.status==='BUY'&&!state.positions.some(p=>p.symbol===a.symbol)&&state.lastEntry[a.symbol]!==a.signal.candleTimes?.m3){let stop=a.signal.risk?.stopPrice,dist=a.price-stop;if(dist>0&&Number.isFinite(dist)){let riskQty=.5/dist,affordable=state.cash/a.price,qty=Math.min(riskQty,affordable),notional=qty*a.price;if(qty>0&&notional>=5){let actualRisk=qty*dist;state.cash-=notional;let p={id:`${a.symbol}-${now}`,symbol:a.symbol,entryPrice:a.price,stopPrice:stop,targetPrice:a.price+2*dist,quantity:qty,notional,riskUsd:actualRisk,openedAt:now,entryCandle:a.signal.candleTimes?.m3};state.positions.push(p);state.lastEntry[a.symbol]=p.entryCandle;}}}}
- saveState()}
-function portfolio(){let unrealized=state.positions.reduce((s,p)=>s+(p.markPrice?p.markPrice-p.entryPrice:0)*p.quantity,0);return {initialCapital:state.initialCapital,cash:state.cash,realizedPnl:state.realizedPnl,openCount:state.positions.length,closedCount:state.trades.length,winRate:state.trades.length?state.trades.filter(t=>t.pnl>0).length/state.trades.length*100:0,positions:state.positions,trades:state.trades.slice(0,100),equity:state.cash+state.positions.reduce((s,p)=>s+p.notional,0)+unrealized}}
-async function market(){let assets=await Promise.all(SYMBOLS.map(getAsset));for(let p of state.positions){let a=assets.find(x=>x.symbol===p.symbol);if(a)p.markPrice=a.price}markAndExecute(assets);return {source:'Binance Spot public market data',updatedAt:new Date().toISOString(),capitalUsd:50,maxRiskUsd:.5,mode:'paper_only',assets,portfolio:portfolio()}}
-async function backtest(res){try{let symbol=(new URL(res.req.url,'http://x')).searchParams.get('symbol')||'BTCUSDT';if(!SYMBOLS.includes(symbol))throw Error('رمز غير مدعوم');let [r15,r5,r3]=await Promise.all(['15m','5m','3m'].map(tf=>getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=1000`)));let c15=mapRows(r15),c5=mapRows(r5),c3=mapRows(r3),trades=[],lastSignal=0;for(let i=205;i<c3.length-2;i++){let c=c3[i];if(c.closeTime>=Date.now())continue;let x15=c15.filter(x=>x.closeTime<=c.closeTime),x5=c5.filter(x=>x.closeTime<=c.closeTime),x3=c3.slice(0,i+1);if(x15.length<205||x5.length<205)continue;let a15=analyzeAt(x15),a5=analyzeAt(x5),a3=analyzeAt(x3),s=signal(a15,a5,a3,c.close);if(s.status!=='BUY'||lastSignal===c.closeTime)continue;lastSignal=c.closeTime;let entry=c3[i+1].open,dist=a3.atr14*1.5;if(!(dist>0))continue;let stop=entry-dist,target=entry+2*dist,exit=null;for(let j=i+1;j<c3.length;j++){let q=c3[j];if(q.low<=stop){exit={price:stop,time:q.closeTime,reason:'STOP'};break}if(q.high>=target){exit={price:target,time:q.closeTime,reason:'TARGET'};break}}if(!exit)continue;let qty=.5/dist,pnl=(exit.price-entry)*qty;trades.push({entryTime:c.closeTime,exitTime:exit.time,entry,exit:exit.price,reason:exit.reason,pnl,risk:.5});i+=Math.max(0,Math.floor((exit.time-c.closeTime)/180000));}
- let wins=trades.filter(t=>t.pnl>0).length,net=trades.reduce((s,t)=>s+t.pnl,0),grossWin=trades.filter(t=>t.pnl>0).reduce((s,t)=>s+t.pnl,0),grossLoss=-trades.filter(t=>t.pnl<0).reduce((s,t)=>s+t.pnl,0);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({symbol,intervals:['15m','5m','3m'],candles:{'15m':c15.length,'5m':c5.length,'3m':c3.length},trades:trades.length,wins,losses:trades.length-wins,winRate:trades.length?wins/trades.length*100:0,netPnl:net,profitFactor:grossLoss?grossWin/grossLoss:null,assumptions:'دخول عند افتتاح الشمعة التالية؛ وقف ATR×1.5؛ هدف 2R؛ مخاطرة نظرية 0.50$؛ لا تشمل الرسوم والانزلاق؛ إذا لمس الوقف والهدف في الشمعة نفسها يُحتسب الوقف أولاً.',sample:trades.slice(-30)}));}catch(e){res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'تعذر تنفيذ الاختبار',detail:e.message}))}}
-function analyzeAt(cs){let v=cs.map(x=>x.close),z=cs.at(-1);return {ready:cs.length>=205,close:z.close,previousClose:cs.at(-2).close,ema20:ema(v,20),ema50:ema(v,50),ema200:ema(v,200),rsi14:rsi(v),atr14:atr(cs),candleTime:z.closeTime}}
-function send(res,obj,status=200){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj))}
-http.createServer(async(req,res)=>{let u=new URL(req.url,'http://localhost');if(u.pathname==='/api/market'){try{send(res,await market())}catch(e){send(res,{error:'تعذر جلب بيانات Binance',detail:e.message},502)}return}if(u.pathname==='/api/portfolio'){send(res,portfolio());return}if(u.pathname==='/api/backtest'){await backtest(res);return}if(u.pathname==='/api/reset'&&req.method==='POST'){state={initialCapital:50,cash:50,realizedPnl:0,positions:[],trades:[],lastEntry:{}};saveState();send(res,{ok:true,portfolio:portfolio()});return}let p=u.pathname==='/'?'/index.html':decodeURIComponent(u.pathname),f=path.resolve(ROOT,'.'+p);if(!f.startsWith(ROOT+path.sep)){res.writeHead(403);res.end();return}fs.readFile(f,(e,d)=>{if(e){res.writeHead(404);res.end('Not found')}else{res.writeHead(200,{'Content-Type':MIME[path.extname(f)]||'application/octet-stream'});res.end(d)}})}).listen(PORT,'0.0.0.0',()=>console.log(`Paper trading server on ${PORT}`));
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+const ROOT = __dirname;
+const PORT = process.env.PORT || 8080;
+const BINANCE = 'https://data-api.binance.vision';
+const CAPITAL = 50;
+const RISK_PER_TRADE = 0.50;
+const MAX_OPEN_POSITIONS = 3;
+const MAX_SYMBOLS = 10;
+const FEE_RATE = 0.001;       // تقدير 0.10% لكل تنفيذ؛ عدّله حسب فئة رسوم حسابك
+const SLIPPAGE_RATE = 0.0005; // تقدير 0.05% لكل تنفيذ
+const DB = path.join(ROOT, 'paper-state.json');
+const STABLES = new Set([
+  'USDCUSDT', 'FDUSDUSDT', 'TUSDUSDT', 'USDPUSDT', 'DAIUSDT',
+  'USDEUSDT', 'EURUSDT', 'BUSDUSDT'
+]);
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8'
+};
+
+function freshState() {
+  return {
+    version: 5,
+    initialCapital: CAPITAL,
+    cash: CAPITAL,
+    realizedPnl: 0,
+    positions: [],
+    trades: [],
+    lastEntry: {}
+  };
+}
+function loadState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(DB, 'utf8'));
+    if (!s || !Array.isArray(s.positions) || !Array.isArray(s.trades)) return freshState();
+    return { ...freshState(), ...s, version: 5 };
+  } catch {
+    return freshState();
+  }
+}
+let state = loadState();
+function saveState() {
+  const tmp = DB + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+  fs.renameSync(tmp, DB);
+}
+async function getJson(url) {
+  const r = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!r.ok) throw new Error(`Binance HTTP ${r.status}`);
+  return r.json();
+}
+function mapRows(rows) {
+  return rows.map(c => ({
+    openTime: +c[0], open: +c[1], high: +c[2], low: +c[3],
+    close: +c[4], volume: +c[5], closeTime: +c[6]
+  }));
+}
+function ema(values, period) {
+  if (values.length < period) return null;
+  let v = 0;
+  for (let i = 0; i < period; i++) v += values[i];
+  v /= period;
+  const k = 2 / (period + 1);
+  for (let i = period; i < values.length; i++) v = values[i] * k + v * (1 - k);
+  return v;
+}
+function rsi(values, period = 14) {
+  if (values.length <= period) return null;
+  let gain = 0, loss = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = values[i] - values[i - 1];
+    if (d > 0) gain += d; else loss -= d;
+  }
+  gain /= period; loss /= period;
+  for (let i = period + 1; i < values.length; i++) {
+    const d = values[i] - values[i - 1];
+    gain = (gain * (period - 1) + Math.max(d, 0)) / period;
+    loss = (loss * (period - 1) + Math.max(-d, 0)) / period;
+  }
+  return loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+}
+function atr(candles, period = 14) {
+  if (candles.length <= period) return null;
+  let sum = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    sum += Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+  }
+  return sum / period;
+}
+function analyze(candles, now = Date.now()) {
+  const closed = candles.filter(c => c.closeTime < now);
+  if (closed.length < 205) return { ready: false, count: closed.length };
+  const closes = closed.map(c => c.close);
+  const last = closed[closed.length - 1];
+  return {
+    ready: true, count: closed.length, close: last.close,
+    previousClose: closed[closed.length - 2].close,
+    ema20: ema(closes, 20), ema50: ema(closes, 50), ema200: ema(closes, 200),
+    rsi14: rsi(closes), atr14: atr(closed), candleTime: last.closeTime
+  };
+}
+function signal(a1h, a15, a5, a3, price) {
+  const ready = [a1h, a15, a5, a3].every(a => a && a.ready);
+  if (!ready) return {
+    status: 'DATA_WAIT', label: 'بانتظار البيانات', reason: 'بيانات غير كافية',
+    diagnostics: { '1h': a1h?.count || 0, '15m': a15?.count || 0, '5m': a5?.count || 0, '3m': a3?.count || 0 }
+  };
+  const trend1h = a1h.close > a1h.ema50 && a1h.ema50 > a1h.ema200;
+  const trend15 = a15.close > a15.ema50 && a15.ema50 > a15.ema200;
+  const confirm5 = a5.close > a5.ema20 && a5.ema20 > a5.ema50 && a5.rsi14 >= 50 && a5.rsi14 <= 70;
+  const entry3 = a3.close > a3.ema20 && a3.close > a3.previousClose && a3.rsi14 >= 50 && a3.rsi14 <= 70;
+  const bearish15 = a15.close < a15.ema50 && a15.ema50 < a15.ema200;
+  const status = trend1h && trend15 && confirm5 && entry3 ? 'BUY' :
+    (bearish15 ? 'NO_BUY' : 'WAIT');
+  const distance = a3.atr14 * 1.5;
+  const stop = price - distance;
+  return {
+    status,
+    label: status === 'BUY' ? 'إشارة شراء تجريبية' : status === 'NO_BUY' ? 'تجنب الشراء' : 'انتظار',
+    reason: status === 'BUY' ? 'توافق 1H و15m و5m و3m' :
+      !trend1h ? 'فلتر 1H غير متحقق' :
+      !trend15 ? 'اتجاه 15m غير متحقق' :
+      !confirm5 ? 'تأكيد 5m غير متحقق' : 'إشارة الدخول 3m غير متحققة',
+    checks: {
+      trend1h: trend1h ? 'صاعد' : 'غير متحقق',
+      trend15: trend15 ? 'صاعد' : bearish15 ? 'هابط' : 'محايد',
+      confirm5: confirm5 ? 'إيجابي' : 'غير متحقق',
+      entry3: entry3 ? 'متحقق' : 'غير متحقق',
+      rsi1h: a1h.rsi14, rsi15: a15.rsi14, rsi5: a5.rsi14, rsi3: a3.rsi14
+    },
+    risk: {
+      maxLossUsd: RISK_PER_TRADE, stopPrice: stop,
+      targetPrice: price + 2 * distance,
+      quantityBase: distance > 0 ? RISK_PER_TRADE / distance : null,
+      notionalUsd: distance > 0 ? RISK_PER_TRADE / distance * price : null,
+      riskReward: '1:2'
+    },
+    candleTimes: { h1: a1h.candleTime, m15: a15.candleTime, m5: a5.candleTime, m3: a3.candleTime }
+  };
+}
+
+async function getTopSymbols() {
+  const [tickers, info] = await Promise.all([
+    getJson(`${BINANCE}/api/v3/ticker/24hr`),
+    getJson(`${BINANCE}/api/v3/exchangeInfo`)
+  ]);
+  const tradable = new Set(info.symbols
+    .filter(s => s.status === 'TRADING' && s.isSpotTradingAllowed === true &&
+      s.quoteAsset === 'USDT')
+    .map(s => s.symbol));
+  return tickers
+    .filter(t => tradable.has(t.symbol) && !STABLES.has(t.symbol) &&
+      Number(t.quoteVolume) > 1000000 && Number(t.lastPrice) > 0)
+    .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+    .slice(0, MAX_SYMBOLS)
+    .map(t => t.symbol);
+}
+async function getAsset(symbol) {
+  const intervals = ['1h', '15m', '5m', '3m'];
+  const [ticker, ...klines] = await Promise.all([
+    getJson(`${BINANCE}/api/v3/ticker/24hr?symbol=${symbol}`),
+    ...intervals.map(tf => getJson(`${BINANCE}/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=250`))
+  ]);
+  const analyses = klines.map(rows => analyze(mapRows(rows)));
+  const price = +ticker.lastPrice;
+  return {
+    symbol, price, changePercent24h: +ticker.priceChangePercent,
+    quoteVolume24h: +ticker.quoteVolume, high24h: +ticker.highPrice, low24h: +ticker.lowPrice,
+    analysis: { '1h': analyses[0], '15m': analyses[1], '5m': analyses[2], '3m': analyses[3] },
+    signal: signal(analyses[0], analyses[1], analyses[2], analyses[3], price)
+  };
+}
+function executePaper(assets) {
+  const now = Date.now();
+  for (const p of [...state.positions]) {
+    const a = assets.find(x => x.symbol === p.symbol);
+    if (!a) continue;
+    p.markPrice = a.price;
+    let exit = null;
+    if (a.price <= p.stopPrice) exit = { price: p.stopPrice, reason: 'وقف الخسارة' };
+    else if (a.price >= p.targetPrice) exit = { price: p.targetPrice, reason: 'تحقق الهدف' };
+    if (exit) closePosition(p, exit.price, exit.reason, now);
+  }
+  for (const a of assets) {
+    if (state.positions.length >= MAX_OPEN_POSITIONS) break;
+    if (a.signal.status !== 'BUY') continue;
+    if (state.positions.some(p => p.symbol === a.symbol)) continue;
+    const candle = a.signal.candleTimes?.m3;
+    if (!candle || state.lastEntry[a.symbol] === candle) continue;
+    const stop = a.signal.risk?.stopPrice;
+    const distance = a.price - stop;
+    if (!(distance > 0)) continue;
+    const riskPerUnit = (entryPrice - stop) + entryPrice * FEE_RATE + stop * (FEE_RATE + SLIPPAGE_RATE);
+    const qtyByRisk = RISK_PER_TRADE / riskPerUnit;
+    const qtyByCash = state.cash / (a.price * (1 + FEE_RATE + SLIPPAGE_RATE));
+    const qty = Math.min(qtyByRisk, qtyByCash);
+    const entryPrice = a.price * (1 + SLIPPAGE_RATE);
+    const notional = qty * entryPrice;
+    const entryFee = notional * FEE_RATE;
+    if (!(qty > 0) || notional + entryFee > state.cash || notional < 5) continue;
+    const actualRisk = qty * (entryPrice - stop) + entryFee;
+    state.cash -= notional + entryFee;
+    state.positions.push({
+      id: `${a.symbol}-${now}`, symbol: a.symbol, entryPrice, stopPrice: stop,
+      targetPrice: entryPrice + 2 * distance, quantity: qty, notional,
+      entryFee, riskUsd: actualRisk, openedAt: now, entryCandle: candle,
+      markPrice: a.price, partialTaken: false
+    });
+    state.lastEntry[a.symbol] = candle;
+  }
+  saveState();
+}
+function closePosition(pos, rawPrice, reason, now = Date.now(), fraction = 1) {
+  const qty = pos.quantity * fraction;
+  const exitPrice = rawPrice * (1 - SLIPPAGE_RATE);
+  const gross = (exitPrice - pos.entryPrice) * qty;
+  const exitFee = exitPrice * qty * FEE_RATE;
+  const allocatedEntryFee = pos.entryFee * fraction;
+  const pnl = gross - exitFee - allocatedEntryFee;
+  state.cash += exitPrice * qty - exitFee;
+  state.realizedPnl += pnl;
+  pos.quantity -= qty;
+  pos.notional = pos.quantity * pos.entryPrice;
+  pos.entryFee -= allocatedEntryFee;
+  state.trades.unshift({
+    ...pos, quantity: qty, status: pnl >= 0 ? 'WIN' : 'LOSS',
+    exitPrice, exitTime: now, pnl, exitReason: reason,
+    entryFee: allocatedEntryFee, exitFee
+  });
+  if (pos.quantity <= 1e-12) state.positions = state.positions.filter(x => x.id !== pos.id);
+}
+function portfolio() {
+  const unrealized = state.positions.reduce((sum, p) => {
+    const mark = p.markPrice || p.entryPrice;
+    return sum + (mark - p.entryPrice) * p.quantity -
+      (mark * p.quantity * FEE_RATE);
+  }, 0);
+  const invested = state.positions.reduce((sum, p) => sum + p.quantity * p.entryPrice, 0);
+  return {
+    initialCapital: state.initialCapital, cash: state.cash, realizedPnl: state.realizedPnl,
+    unrealizedPnl: unrealized, openCount: state.positions.length, closedCount: state.trades.length,
+    maxOpenPositions: MAX_OPEN_POSITIONS, winRate: state.trades.length ?
+      state.trades.filter(t => t.pnl > 0).length / state.trades.length * 100 : 0,
+    positions: state.positions, trades: state.trades.slice(0, 100),
+    equity: state.cash + invested + unrealized
+  };
+}
+async function market() {
+  const symbols = await getTopSymbols();
+  const results = await Promise.allSettled(symbols.map(getAsset));
+  const assets = results.filter(x => x.status === 'fulfilled').map(x => x.value);
+  const errors = results.filter(x => x.status === 'rejected').map(x => x.reason.message);
+  executePaper(assets);
+  return {
+    source: 'Binance Spot public market data', updatedAt: new Date().toISOString(),
+    mode: 'paper_only', capitalUsd: CAPITAL, maxRiskUsd: RISK_PER_TRADE,
+    maxOpenPositions: MAX_OPEN_POSITIONS, symbols, assets, errors, portfolio: portfolio()
+  };
+}
+
+// Historical candles are paginated; Binance limits each response to 1000 rows.
+async function getHistorical(symbol, interval, total = 10000) {
+  const all = [];
+  let endTime = undefined;
+  while (all.length < total) {
+    const limit = Math.min(1000, total - all.length);
+    let url = `${BINANCE}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    if (endTime !== undefined) url += `&endTime=${endTime}`;
+    const rows = await getJson(url);
+    if (!rows.length) break;
+    all.unshift(...mapRows(rows));
+    const earliest = +rows[0][0];
+    if (earliest <= 0 || rows.length < limit) break;
+    endTime = earliest - 1;
+  }
+  const unique = new Map();
+  for (const c of all) if (c.closeTime < Date.now()) unique.set(c.openTime, c);
+  return [...unique.values()].sort((a, b) => a.openTime - b.openTime).slice(-total);
+}
+function indicatorSeries(candles) {
+  // O(N) indicator precomputation avoids repeatedly recalculating every historical prefix.
+  const n = candles.length, out = new Array(n);
+  const closes = candles.map(c => c.close);
+  const e20 = new Array(n), e50 = new Array(n), e200 = new Array(n);
+  function fillEma(period, target) {
+    if (n < period) return;
+    let seed = 0;
+    for (let i = 0; i < period; i++) seed += closes[i];
+    let value = seed / period;
+    target[period - 1] = value;
+    const k = 2 / (period + 1);
+    for (let i = period; i < n; i++) {
+      value = closes[i] * k + value * (1 - k);
+      target[i] = value;
+    }
+  }
+  fillEma(20, e20); fillEma(50, e50); fillEma(200, e200);
+  const gains = new Array(n).fill(0), losses = new Array(n).fill(0), trs = new Array(n).fill(0);
+  for (let i = 1; i < n; i++) {
+    const d = closes[i] - closes[i - 1];
+    gains[i] = Math.max(d, 0); losses[i] = Math.max(-d, 0);
+    const c = candles[i], prev = candles[i - 1];
+    trs[i] = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
+  }
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= 14 && i < n; i++) { avgGain += gains[i]; avgLoss += losses[i]; }
+  avgGain /= 14; avgLoss /= 14;
+  for (let i = 14; i < n; i++) {
+    if (i > 14) {
+      avgGain = (avgGain * 13 + gains[i]) / 14;
+      avgLoss = (avgLoss * 13 + losses[i]) / 14;
+    }
+    const rsiValue = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    let trSum = 0;
+    for (let j = i - 13; j <= i; j++) trSum += trs[j];
+    if (i >= 204) {
+      out[i] = {
+        ready: true, count: i + 1, close: closes[i], previousClose: closes[i - 1],
+        ema20: e20[i], ema50: e50[i], ema200: e200[i], rsi14: rsiValue,
+        atr14: trSum / 14, candleTime: candles[i].closeTime
+      };
+    }
+  }
+  return out;
+}
+function latestAt(series, candles, time, pointer) {
+  while (pointer.index + 1 < candles.length && candles[pointer.index + 1].closeTime <= time) pointer.index++;
+  return pointer.index >= 204 ? series[pointer.index] : null;
+}
+function feeAdjustedEntry(raw) { return raw * (1 + SLIPPAGE_RATE); }
+function feeAdjustedExit(raw) { return raw * (1 - SLIPPAGE_RATE); }
+function simulateTrade(candles, index, entry, stopDistance, mode, maxMinutes) {
+  const stop = entry - stopDistance;
+  const target1 = entry + stopDistance;
+  const target2 = entry + 2 * stopDistance;
+  const riskPerUnit = stopDistance + entry * FEE_RATE + (entry - stop) * (FEE_RATE + SLIPPAGE_RATE);
+  const qty = RISK_PER_TRADE / riskPerUnit;
+  let remaining = qty, pnl = 0, partial = false, exitTime = null, reason = null;
+  const endTime = candles[index].openTime + maxMinutes * 60000;
+  for (let j = index; j < candles.length; j++) {
+    const c = candles[j];
+    if (c.openTime > endTime) break;
+    // Conservative intrabar rule: if stop and target are both touched, stop is first.
+    if (c.low <= stop) {
+      const px = feeAdjustedExit(stop);
+      pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+      exitTime = c.closeTime; reason = 'STOP'; remaining = 0; break;
+    }
+    if (mode === 'A') {
+      if (c.high >= target2) {
+        const px = feeAdjustedExit(target2);
+        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+        exitTime = c.closeTime; reason = 'TARGET_2R'; remaining = 0; break;
+      }
+    } else {
+      if (!partial && c.high >= target1) {
+        const px = feeAdjustedExit(target1);
+        const sold = remaining * 0.5;
+        pnl += (px - entry) * sold - px * sold * FEE_RATE;
+        remaining -= sold; partial = true;
+      }
+      // After +1R, the remaining half has a break-even stop at entry.
+      if (partial && c.low <= entry) {
+        const px = feeAdjustedExit(entry);
+        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+        exitTime = c.closeTime; reason = 'BREAKEVEN_AFTER_PARTIAL'; remaining = 0; break;
+      }
+      if (partial && c.high >= target2) {
+        const px = feeAdjustedExit(target2);
+        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+        exitTime = c.closeTime; reason = 'TARGET_2R_AFTER_PARTIAL'; remaining = 0; break;
+      }
+    }
+    if (j === candles.length - 1 || c.closeTime >= endTime) {
+      const px = feeAdjustedExit(c.close);
+      pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+      exitTime = c.closeTime; reason = partial ? 'TIME_EXIT_AFTER_PARTIAL' : 'TIME_EXIT';
+      remaining = 0; break;
+    }
+  }
+  if (remaining > 0) {
+    const last = candles[Math.min(candles.length - 1, index)];
+    const px = feeAdjustedExit(last.close);
+    pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+    exitTime = last.closeTime; reason = 'DATA_END';
+  }
+  const entryFee = entry * qty * FEE_RATE;
+  return { entryTime: candles[index].openTime, exitTime, entry, stop, qty, pnl: pnl - entryFee, reason, partialTaken: partial };
+}
+function summarizeTrades(trades, label, symbol) {
+  const wins = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl < 0);
+  const grossWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = -losses.reduce((s, t) => s + t.pnl, 0);
+  let equity = CAPITAL, peak = CAPITAL, maxDrawdown = 0;
+  for (const t of trades) {
+    equity += t.pnl; peak = Math.max(peak, equity);
+    maxDrawdown = Math.max(maxDrawdown, peak > 0 ? (peak - equity) / peak * 100 : 0);
+  }
+  return {
+    label, symbol, trades: trades.length, wins: wins.length, losses: losses.length,
+    winRate: trades.length ? wins.length / trades.length * 100 : 0,
+    netPnl: trades.reduce((s, t) => s + t.pnl, 0),
+    profitFactor: grossLoss ? grossWin / grossLoss : (grossWin ? null : 0),
+    expectancy: trades.length ? trades.reduce((s, t) => s + t.pnl, 0) / trades.length : 0,
+    maxDrawdownPercent: maxDrawdown,
+    avgHoldingMinutes: trades.length ? trades.reduce((s, t) => s + (t.exitTime - t.entryTime) / 60000, 0) / trades.length : 0,
+    sample: trades.slice(-30)
+  };
+}
+async function backtest(res) {
+  try {
+    const url = new URL(res.req.url, 'http://localhost');
+    const requested = url.searchParams.get('symbol') || 'BTCUSDT';
+    const symbol = requested.toUpperCase();
+    if (!/^[A-Z0-9]{2,20}USDT$/.test(symbol)) throw new Error('صيغة الرمز غير صحيحة؛ استخدم زوجاً مقابل USDT مثل BTCUSDT');
+    const [h1, m15, m5, m3] = await Promise.all([
+      getHistorical(symbol, '1h'), getHistorical(symbol, '15m'),
+      getHistorical(symbol, '5m'), getHistorical(symbol, '3m')
+    ]);
+    const series = {
+      h1: indicatorSeries(h1), m15: indicatorSeries(m15),
+      m5: indicatorSeries(m5), m3: indicatorSeries(m3)
+    };
+    const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
+    const comparisons = [];
+    const diagnostics = { scanned3mCandles: 0, candidateSignals: 0, rejected: { data: 0, h1: 0, m15: 0, m5: 0, m3: 0 } };
+    for (const minutes of [30, 60, 120]) {
+      for (const mode of ['A', 'B']) {
+        const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
+        const trades = [];
+        let nextAllowedTime = 0;
+        for (let i = 205; i < m3.length - 1; i++) {
+          const c = m3[i];
+          if (c.closeTime >= Date.now() || c.openTime < nextAllowedTime) continue;
+          diagnostics.scanned3mCandles++;
+          const a1 = latestAt(series.h1, h1, c.closeTime, ptr.h1);
+          const a15 = latestAt(series.m15, m15, c.closeTime, ptr.m15);
+          const a5 = latestAt(series.m5, m5, c.closeTime, ptr.m5);
+          const a3 = series.m3[i];
+          if (!a1 || !a15 || !a5 || !a3) { diagnostics.rejected.data++; continue; }
+          if (!(a1.close > a1.ema50 && a1.ema50 > a1.ema200)) { diagnostics.rejected.h1++; continue; }
+          if (!(a15.close > a15.ema50 && a15.ema50 > a15.ema200)) { diagnostics.rejected.m15++; continue; }
+          if (!(a5.close > a5.ema20 && a5.ema20 > a5.ema50 && a5.rsi14 >= 50 && a5.rsi14 <= 70)) { diagnostics.rejected.m5++; continue; }
+          if (!(a3.close > a3.ema20 && a3.close > a3.previousClose && a3.rsi14 >= 50 && a3.rsi14 <= 70)) { diagnostics.rejected.m3++; continue; }
+          diagnostics.candidateSignals++;
+          const entryRaw = m3[i + 1].open;
+          const entry = feeAdjustedEntry(entryRaw);
+          const dist = a3.atr14 * 1.5;
+          if (!(dist > 0)) continue;
+          const trade = simulateTrade(m3, i + 1, entry, dist, mode, minutes);
+          trades.push(trade);
+          nextAllowedTime = trade.exitTime || c.closeTime;
+        }
+        comparisons.push(summarizeTrades(trades, `Mode ${mode} / ${minutes} min`, symbol));
+      }
+    }
+    const sharedStart = Math.max(h1[0]?.openTime || 0, m15[0]?.openTime || 0, m5[0]?.openTime || 0, m3[0]?.openTime || 0);
+    const sharedEnd = Math.min(h1.at(-1)?.closeTime || 0, m15.at(-1)?.closeTime || 0, m5.at(-1)?.closeTime || 0, m3.at(-1)?.closeTime || 0);
+    const defaultResult = comparisons.find(x => x.label === 'Mode A / 60 min') || comparisons[0];
+    send(res, {
+      version: 'V5', symbol, intervals: ['1h', '15m', '5m', '3m'],
+      // Legacy summary fields are retained so the existing V4 dashboard can still render a result.
+      trades: defaultResult.trades, wins: defaultResult.wins, losses: defaultResult.losses,
+      winRate: defaultResult.winRate, netPnl: defaultResult.netPnl,
+      profitFactor: defaultResult.profitFactor, sample: defaultResult.sample,
+      candleCounts: { '1h': h1.length, '15m': m15.length, '5m': m5.length, '3m': m3.length },
+      sharedPeriod: { start: new Date(sharedStart).toISOString(), end: new Date(sharedEnd).toISOString() },
+      comparisons, diagnostics,
+      costs: { feeRatePerSide: FEE_RATE, slippageRatePerSide: SLIPPAGE_RATE },
+      limitations: [
+        'قائمة أفضل 10 تُختار من بيانات السوق الحالية؛ لا تتوفر هنا لقطات تاريخية موثقة لقائمة الأزواج المؤهلة، لذلك لا يمكن إزالة انحياز البقاء بالكامل.',
+        'الاختبار التاريخي لكل رمز على حدة وليس محاكاة محفظة مشتركة متعددة الرموز؛ لذلك لا يمثل قيود رأس المال والتزامن الثلاثة على مستوى المحفظة.',
+        'طريقة B: بيع 50% عند +1R ثم نقل وقف الكمية المتبقية إلى سعر الدخول، والهدف +2R؛ لا يُحتسب نقل الوقف إلا بعد إغلاق شمعة لمس +1R، وبافتراض محافظ عند تعارض الوقف والهدف.',
+        'الاختبار يستخدم شموع OHLC؛ ترتيب الحركة داخل الشمعة غير معروف، لذا يُحتسب الوقف أولاً عند لمس الوقف والهدف معاً.'
+      ]
+    });
+  } catch (e) {
+    send(res, { error: 'تعذر تنفيذ الاختبار', detail: e.message }, 502);
+  }
+}
+function send(res, obj, status = 200) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
+  });
+  res.end(JSON.stringify(obj));
+}
+http.createServer(async (req, res) => {
+  const u = new URL(req.url, 'http://localhost');
+  if (u.pathname === '/api/market') {
+    try { send(res, await market()); }
+    catch (e) { send(res, { error: 'تعذر جلب بيانات Binance', detail: e.message }, 502); }
+    return;
+  }
+  if (u.pathname === '/api/portfolio') { send(res, portfolio()); return; }
+  if (u.pathname === '/api/backtest') { await backtest(res); return; }
+  if (u.pathname === '/api/reset' && req.method === 'POST') {
+    state = freshState(); saveState(); send(res, { ok: true, portfolio: portfolio() }); return;
+  }
+  const p = u.pathname === '/' ? '/index.html' : decodeURIComponent(u.pathname);
+  const f = path.resolve(ROOT, '.' + p);
+  if (!f.startsWith(ROOT + path.sep)) { res.writeHead(403); res.end(); return; }
+  fs.readFile(f, (err, data) => {
+    if (err) { res.writeHead(404); res.end('Not found'); }
+    else { res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' }); res.end(data); }
+  });
+}).listen(PORT, '0.0.0.0', () => console.log(`Mohammed Trading AI V5 paper server on ${PORT}`));
