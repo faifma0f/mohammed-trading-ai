@@ -287,48 +287,63 @@ async function getHistorical(symbol, interval, total = 10000) {
   return [...unique.values()].sort((a, b) => a.openTime - b.openTime).slice(-total);
 }
 function indicatorSeries(candles) {
-  // O(N) indicator precomputation avoids repeatedly recalculating every historical prefix.
-  const n = candles.length, out = new Array(n);
+  const n = candles.length;
+  const out = new Array(n).fill(null);
   const closes = candles.map(c => c.close);
-  const e20 = new Array(n), e50 = new Array(n), e200 = new Array(n);
+  const ema20 = new Array(n).fill(null);
+  const ema50 = new Array(n).fill(null);
+  const ema200 = new Array(n).fill(null);
+  const rsi14 = new Array(n).fill(null);
+  const atr14 = new Array(n).fill(null);
+
   function fillEma(period, target) {
     if (n < period) return;
-    let seed = 0;
-    for (let i = 0; i < period; i++) seed += closes[i];
-    let value = seed / period;
-    target[period - 1] = value;
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum += closes[i];
+    target[period - 1] = sum / period;
     const k = 2 / (period + 1);
-    for (let i = period; i < n; i++) {
-      value = closes[i] * k + value * (1 - k);
-      target[i] = value;
-    }
+    for (let i = period; i < n; i++) target[i] = closes[i] * k + target[i - 1] * (1 - k);
   }
-  fillEma(20, e20); fillEma(50, e50); fillEma(200, e200);
-  const gains = new Array(n).fill(0), losses = new Array(n).fill(0), trs = new Array(n).fill(0);
-  for (let i = 1; i < n; i++) {
-    const d = closes[i] - closes[i - 1];
-    gains[i] = Math.max(d, 0); losses[i] = Math.max(-d, 0);
-    const c = candles[i], prev = candles[i - 1];
-    trs[i] = Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close));
-  }
-  let avgGain = 0, avgLoss = 0;
-  for (let i = 1; i <= 14 && i < n; i++) { avgGain += gains[i]; avgLoss += losses[i]; }
-  avgGain /= 14; avgLoss /= 14;
-  for (let i = 14; i < n; i++) {
-    if (i > 14) {
-      avgGain = (avgGain * 13 + gains[i]) / 14;
-      avgLoss = (avgLoss * 13 + losses[i]) / 14;
+  fillEma(20, ema20);
+  fillEma(50, ema50);
+  fillEma(200, ema200);
+
+  if (n > 14) {
+    let gain = 0, loss = 0;
+    for (let i = 1; i <= 14; i++) {
+      const d = closes[i] - closes[i - 1];
+      if (d > 0) gain += d; else loss -= d;
     }
-    const rsiValue = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    gain /= 14; loss /= 14;
+    rsi14[14] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+    for (let i = 15; i < n; i++) {
+      const d = closes[i] - closes[i - 1];
+      gain = (gain * 13 + Math.max(d, 0)) / 14;
+      loss = (loss * 13 + Math.max(-d, 0)) / 14;
+      rsi14[i] = loss === 0 ? 100 : 100 - 100 / (1 + gain / loss);
+    }
+    const trueRanges = new Array(n).fill(null);
+    for (let i = 1; i < n; i++) {
+      const c = candles[i], p = candles[i - 1];
+      trueRanges[i] = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+    }
+    // Match the live atr() function: simple mean of the latest 14 true ranges.
     let trSum = 0;
-    for (let j = i - 13; j <= i; j++) trSum += trs[j];
-    if (i >= 204) {
-      out[i] = {
-        ready: true, count: i + 1, close: closes[i], previousClose: closes[i - 1],
-        ema20: e20[i], ema50: e50[i], ema200: e200[i], rsi14: rsiValue,
-        atr14: trSum / 14, candleTime: candles[i].closeTime
-      };
+    for (let i = 1; i <= 14; i++) trSum += trueRanges[i];
+    atr14[14] = trSum / 14;
+    for (let i = 15; i < n; i++) {
+      trSum += trueRanges[i] - trueRanges[i - 14];
+      atr14[i] = trSum / 14;
     }
+  }
+
+  for (let i = 204; i < n; i++) {
+    out[i] = {
+      ready: true, count: i + 1, close: closes[i],
+      previousClose: closes[i - 1],
+      ema20: ema20[i], ema50: ema50[i], ema200: ema200[i],
+      rsi14: rsi14[i], atr14: atr14[i], candleTime: candles[i].closeTime
+    };
   }
   return out;
 }
@@ -339,62 +354,84 @@ function latestAt(series, candles, time, pointer) {
 function feeAdjustedEntry(raw) { return raw * (1 + SLIPPAGE_RATE); }
 function feeAdjustedExit(raw) { return raw * (1 - SLIPPAGE_RATE); }
 function simulateTrade(candles, index, entry, stopDistance, mode, maxMinutes) {
-  const stop = entry - stopDistance;
+  const initialStop = entry - stopDistance;
   const target1 = entry + stopDistance;
   const target2 = entry + 2 * stopDistance;
-  const riskPerUnit = stopDistance + entry * FEE_RATE + (entry - stop) * (FEE_RATE + SLIPPAGE_RATE);
-  const qty = RISK_PER_TRADE / riskPerUnit;
-  let remaining = qty, pnl = 0, partial = false, exitTime = null, reason = null;
+  const qty = RISK_PER_TRADE / stopDistance;
+  let remaining = qty, pnl = 0, partial = false, activeStop = initialStop;
+  let exitTime = null, reason = null;
   const endTime = candles[index].openTime + maxMinutes * 60000;
+
+  function realize(rawPrice, amount) {
+    const px = feeAdjustedExit(rawPrice);
+    pnl += (px - entry) * amount - px * amount * FEE_RATE;
+  }
+
   for (let j = index; j < candles.length; j++) {
     const c = candles[j];
     if (c.openTime > endTime) break;
-    // Conservative intrabar rule: if stop and target are both touched, stop is first.
-    if (c.low <= stop) {
-      const px = feeAdjustedExit(stop);
-      pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
-      exitTime = c.closeTime; reason = 'STOP'; remaining = 0; break;
+
+    // Conservative OHLC handling: active stop is evaluated before targets.
+    if (c.low <= activeStop) {
+      realize(activeStop, remaining);
+      exitTime = c.closeTime;
+      reason = partial ? 'BREAKEVEN_AFTER_PARTIAL' : 'STOP';
+      remaining = 0;
+      break;
     }
+
     if (mode === 'A') {
       if (c.high >= target2) {
-        const px = feeAdjustedExit(target2);
-        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
+        realize(target2, remaining);
         exitTime = c.closeTime; reason = 'TARGET_2R'; remaining = 0; break;
       }
     } else {
       if (!partial && c.high >= target1) {
-        const px = feeAdjustedExit(target1);
         const sold = remaining * 0.5;
-        pnl += (px - entry) * sold - px * sold * FEE_RATE;
-        remaining -= sold; partial = true;
-      }
-      // After +1R, the remaining half has a break-even stop at entry.
-      if (partial && c.low <= entry) {
-        const px = feeAdjustedExit(entry);
-        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
-        exitTime = c.closeTime; reason = 'BREAKEVEN_AFTER_PARTIAL'; remaining = 0; break;
+        realize(target1, sold);
+        remaining -= sold;
+        partial = true;
+        activeStop = entry;
+
+        // If the same OHLC candle also traded back through entry, assume
+        // the remaining half was stopped at breakeven (conservative ordering).
+        if (c.low <= entry) {
+          realize(entry, remaining);
+          exitTime = c.closeTime;
+          reason = 'BREAKEVEN_AFTER_PARTIAL';
+          remaining = 0;
+          break;
+        }
       }
       if (partial && c.high >= target2) {
-        const px = feeAdjustedExit(target2);
-        pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
-        exitTime = c.closeTime; reason = 'TARGET_2R_AFTER_PARTIAL'; remaining = 0; break;
+        realize(target2, remaining);
+        exitTime = c.closeTime;
+        reason = 'TARGET_2R_AFTER_PARTIAL';
+        remaining = 0;
+        break;
       }
     }
+
     if (j === candles.length - 1 || c.closeTime >= endTime) {
-      const px = feeAdjustedExit(c.close);
-      pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
-      exitTime = c.closeTime; reason = partial ? 'TIME_EXIT_AFTER_PARTIAL' : 'TIME_EXIT';
-      remaining = 0; break;
+      realize(c.close, remaining);
+      exitTime = c.closeTime;
+      reason = partial ? 'TIME_EXIT_AFTER_PARTIAL' : 'TIME_EXIT';
+      remaining = 0;
+      break;
     }
   }
+
   if (remaining > 0) {
     const last = candles[Math.min(candles.length - 1, index)];
-    const px = feeAdjustedExit(last.close);
-    pnl += (px - entry) * remaining - px * remaining * FEE_RATE;
-    exitTime = last.closeTime; reason = 'DATA_END';
+    realize(last.close, remaining);
+    exitTime = last.closeTime;
+    reason = 'DATA_END';
   }
   const entryFee = entry * qty * FEE_RATE;
-  return { entryTime: candles[index].openTime, exitTime, entry, stop, qty, pnl: pnl - entryFee, reason, partialTaken: partial };
+  return {
+    entryTime: candles[index].openTime, exitTime, entry, stop: initialStop,
+    qty, pnl: pnl - entryFee, reason, partialTaken: partial
+  };
 }
 function summarizeTrades(trades, label, symbol) {
   const wins = trades.filter(t => t.pnl > 0);
@@ -431,13 +468,12 @@ async function backtest(res) {
       h1: indicatorSeries(h1), m15: indicatorSeries(m15),
       m5: indicatorSeries(m5), m3: indicatorSeries(m3)
     };
-    const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
     const comparisons = [];
     const diagnostics = { scanned3mCandles: 0, candidateSignals: 0, rejected: { data: 0, h1: 0, m15: 0, m5: 0, m3: 0 } };
     for (const minutes of [30, 60, 120]) {
       for (const mode of ['A', 'B']) {
-        const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
         const trades = [];
+        const ptr = { h1: { index: -1 }, m15: { index: -1 }, m5: { index: -1 } };
         let nextAllowedTime = 0;
         for (let i = 205; i < m3.length - 1; i++) {
           const c = m3[i];

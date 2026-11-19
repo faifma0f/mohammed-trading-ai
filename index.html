@@ -1,12 +1,114 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#10131d"><title>Mohammed Trading AI</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head><body>
-<header class="top"><div class="brand"><div class="mark">M</div><div><strong>Mohammed Trading AI</strong><small>لوحة مراقبة التداول</small></div></div><span class="pill"><i></i> تداول تجريبي فقط</span></header><main>
-<section class="intro"><div><p class="eyebrow">محرك الاستراتيجية V4</p><h1>متعدد الفريمات</h1><p class="muted">15 دقيقة للاتجاه · 5 دقائق للتأكيد · 3 دقائق للدخول</p></div><div class="timeframe"><span>رأس المال الابتدائي</span><strong>$50</strong></div></section>
-<section class="notice"><strong>محاكاة فقط — لا يتم إرسال أوامر إلى Binance</strong><p>الصفقات الافتراضية تحاكي التنفيذ بناءً على بيانات Spot العامة. حد المخاطرة المستهدف 0.50$، وقد يقل حجم المركز إذا لم يكفِ الرصيد. لا توجد مفاتيح تداول أو سحب.</p></section>
-<section class="stats"><article class="card"><span>الرصيد النقدي</span><strong id="cash">$50.00</strong><small>غير المستثمر</small></article><article class="card"><span>صافي المحقق</span><strong id="realized">$0.00</strong><small>الصفقات المغلقة</small></article><article class="card"><span>الصفقات المفتوحة</span><strong id="openCount">0</strong><small>محاكاة</small></article><article class="card"><span>نسبة الفوز</span><strong id="winRate">—</strong><small id="closedCount">0 صفقة مغلقة</small></article></section>
-<section class="panel"><div class="panel-head"><div><h2>مراقبة السوق</h2><p class="muted">Binance Spot · مقابل USDT</p></div><span class="tag" id="connection">جارٍ الاتصال</span></div><div class="table-wrap"><table><thead><tr><th>العملة</th><th>السعر</th><th>تغير 24h</th><th>الإشارة</th></tr></thead><tbody id="marketRows"><tr><td colspan="4" class="loading">جارٍ تحميل البيانات...</td></tr></tbody></table></div><p id="error" class="error" hidden></p></section>
-<section class="panel"><div class="panel-head"><div><h2>تحليل الفريمات</h2><p class="muted">EMA 20/50/200 + RSI 14 · شموع مغلقة</p></div></div><div id="analysisCards" class="asset-analysis"><div class="loading">بانتظار البيانات...</div></div></section>
-<section class="panel"><div class="panel-head"><div><h2>الصفقات المفتوحة</h2><p class="muted">تُفتح تلقائياً عند اكتمال شروط الشراء</p></div></div><div id="positions" class="asset-analysis"><p class="muted">لا توجد صفقات مفتوحة حالياً.</p></div></section>
-<section class="panel"><div class="panel-head"><div><h2>سجل الصفقات</h2><p class="muted">آخر 100 صفقة افتراضية</p></div></div><div class="table-wrap"><table><thead><tr><th>العملة</th><th>الدخول</th><th>الخروج</th><th>النتيجة</th><th>السبب</th></tr></thead><tbody id="tradeRows"><tr><td colspan="5" class="muted">لا توجد صفقات مغلقة بعد.</td></tr></tbody></table></div></section>
-<section class="panel"><div class="panel-head"><div><h2>اختبار تاريخي (Backtesting)</h2><p class="muted">حتى 1000 شمعة لكل فريم من Binance</p></div><button id="runBacktest">تشغيل الاختبار</button></div><label for="btSymbol">العملة</label><select id="btSymbol"><option value="BTCUSDT">BTC / USDT</option><option value="ETHUSDT">ETH / USDT</option><option value="SOLUSDT">SOL / USDT</option></select><div id="backtestResult" class="muted">لم يتم تشغيل الاختبار بعد.</div><p class="disclaimer">الاختبار التاريخي تقريبي وليس ضماناً للمستقبل. لا يشمل رسوم التداول أو الانزلاق السعري. إذا لمس الوقف والهدف داخل الشمعة نفسها، يحتسب الاختبار الوقف أولاً.</p></section>
-<section class="panel danger-zone"><h2>إعادة ضبط المحفظة التجريبية</h2><p class="muted">تحذف سجل الصفقات وتعيد الرصيد إلى 50 دولاراً.</p><button class="secondary" id="resetPaper">إعادة الضبط</button><span id="resetMsg" class="muted"></span></section>
-<footer>Mohammed Trading AI <span>V4 · Paper Trading · لا تنفيذ حقيقي</span></footer></main></body></html>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131d">
+  <title>Mohammed Trading AI</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">M</div>
+    <div class="brand-copy">
+      <h1>Mohammed Trading AI</h1>
+      <p>لوحة مراقبة التداول</p>
+    </div>
+    <span class="mode-pill"><i></i> تداول تجريبي فقط</span>
+  </header>
+
+  <main class="container">
+    <section class="hero panel">
+      <div>
+        <p class="eyebrow">PAPER TRADING · V5.1</p>
+        <h2>مراقبة السوق وإشارات الاستراتيجية</h2>
+        <p class="muted">بيانات عامة من Binance Spot — لا يتم إرسال أوامر حقيقية.</p>
+      </div>
+      <div class="hero-actions">
+        <button id="refreshBtn" class="btn btn-primary">تحديث السوق</button>
+        <span id="updatedAt" class="muted small">لم يتم التحديث بعد</span>
+      </div>
+    </section>
+
+    <section class="stats-grid">
+      <article class="stat panel"><span>رأس المال الابتدائي</span><strong id="initialCapital">$50.00</strong></article>
+      <article class="stat panel"><span>الرصيد النقدي</span><strong id="cash">$50.00</strong></article>
+      <article class="stat panel"><span>قيمة المحفظة</span><strong id="equity">$50.00</strong></article>
+      <article class="stat panel"><span>الربح / الخسارة المحققة</span><strong id="realized">$0.00</strong></article>
+      <article class="stat panel"><span>مراكز مفتوحة</span><strong id="openCount">0 / 3</strong></article>
+      <article class="stat panel"><span>نسبة الفوز</span><strong id="winRate">—</strong></article>
+    </section>
+
+    <section class="panel section">
+      <div class="section-heading">
+        <div><p class="eyebrow">LIVE MARKET</p><h2>أفضل 10 أزواج USDT</h2></div>
+        <span id="marketStatus" class="status">بانتظار البيانات</span>
+      </div>
+      <p class="muted small">يتم اختيار الأزواج ديناميكياً حسب حجم التداول اليومي، مع استبعاد العملات المستقرة.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>الزوج</th><th>السعر</th><th>التغير 24h</th><th>حجم USDT</th><th>إشارة الاستراتيجية</th><th>سبب الإشارة</th></tr></thead>
+          <tbody id="marketBody"><tr><td colspan="6" class="empty">اضغط تحديث السوق لجلب البيانات.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <div class="section-heading">
+        <div><p class="eyebrow">PAPER POSITIONS</p><h2>المراكز المفتوحة</h2></div>
+        <span class="muted small">حد المخاطرة الاسمي: $0.50 لكل صفقة</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>الزوج</th><th>سعر الدخول</th><th>وقف الخسارة</th><th>الهدف</th><th>الكمية</th><th>المخاطرة</th></tr></thead>
+          <tbody id="positionsBody"><tr><td colspan="6" class="empty">لا توجد مراكز مفتوحة.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel section">
+      <div class="section-heading">
+        <div><p class="eyebrow">TRADE HISTORY</p><h2>آخر الصفقات الافتراضية</h2></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>الزوج</th><th>الدخول</th><th>الخروج</th><th>النتيجة</th><th>سبب الخروج</th><th>الوقت</th></tr></thead>
+          <tbody id="tradesBody"><tr><td colspan="6" class="empty">لا توجد صفقات مغلقة بعد.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel section" id="backtest">
+      <div class="section-heading">
+        <div><p class="eyebrow">HISTORICAL TEST</p><h2>اختبار الاستراتيجية التاريخي</h2></div>
+        <span class="status">10,000 شمعة لكل فريم</span>
+      </div>
+      <p class="muted">فلتر الاتجاه 1H، ثم 15m و5m و3m. تتم مقارنة طريقتي جني الأرباح A وB على مدد 30 و60 و120 دقيقة، بعد تقدير الرسوم والانزلاق.</p>
+      <div class="backtest-controls">
+        <label for="symbolSelect">زوج الاختبار</label>
+        <select id="symbolSelect">
+          <option value="BTCUSDT">BTC / USDT</option>
+          <option value="ETHUSDT">ETH / USDT</option>
+          <option value="SOLUSDT">SOL / USDT</option>
+        </select>
+        <button id="backtestBtn" class="btn btn-primary">تشغيل المقارنة</button>
+      </div>
+      <div id="backtestStatus" class="muted small" aria-live="polite">اختر زوجاً ثم شغّل الاختبار.</div>
+      <div id="backtestSummary" class="comparison-grid"></div>
+      <div id="diagnostics" class="diagnostics"></div>
+      <div id="limitations" class="notice hidden"></div>
+    </section>
+
+    <section class="panel section danger-zone">
+      <div>
+        <h2>إعادة ضبط الحساب التجريبي</h2>
+        <p class="muted small">سيتم حذف المراكز وسجل الصفقات والعودة إلى رأس مال 50 دولاراً.</p>
+      </div>
+      <button id="resetBtn" class="btn btn-danger">إعادة ضبط Paper Trading</button>
+    </section>
+
+    <p class="footer-note">هذا النظام للتجربة والبحث فقط. نتائج الاختبار التاريخي لا تضمن الأداء المستقبلي.</p>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

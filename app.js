@@ -1,7 +1,145 @@
-const names={BTC:'Bitcoin',ETH:'Ethereum',SOL:'Solana'},fmt=(n,d=2)=>n==null||!Number.isFinite(+n)?'—':(+n).toLocaleString('en-US',{maximumFractionDigits:d}),usd=n=>n==null?'—':'$'+fmt(n,n>=100?2:4),safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const status=s=>s==='BUY'?'شراء تجريبي':s==='NO_BUY'?'تجنب الشراء':s==='DATA_WAIT'?'بانتظار البيانات':'انتظار';
-function renderPortfolio(p){document.getElementById('cash').textContent=usd(p.cash);document.getElementById('realized').textContent=usd(p.realizedPnl);document.getElementById('openCount').textContent=p.openCount;document.getElementById('winRate').textContent=p.closedCount?fmt(p.winRate,1)+'%':'—';document.getElementById('closedCount').textContent=p.closedCount+' صفقة مغلقة';document.getElementById('positions').innerHTML=p.positions.length?p.positions.map(x=>`<article class="asset-card"><div class="asset-head"><b>${x.symbol.replace('USDT','')}</b><span class="tag">مفتوحة تجريبياً</span></div><div class="risk-grid"><div><small>الدخول</small><b>${usd(x.entryPrice)}</b></div><div><small>السعر الحالي</small><b>${usd(x.markPrice)}</b></div><div><small>وقف الخسارة</small><b>${usd(x.stopPrice)}</b></div><div><small>الهدف</small><b>${usd(x.targetPrice)}</b></div><div><small>المخاطرة المحسوبة</small><b>${usd(x.riskUsd)}</b></div><div><small>حجم المركز</small><b>${fmt(x.quantity,6)}</b></div></div></article>`).join(''):'<p class="muted">لا توجد صفقات مفتوحة حالياً.</p>';document.getElementById('tradeRows').innerHTML=p.trades.length?p.trades.map(t=>`<tr><td>${t.symbol.replace('USDT','')}</td><td>${usd(t.entryPrice)}</td><td>${usd(t.exitPrice)}</td><td class="${t.pnl>=0?'positive':'negative'}">${usd(t.pnl)}</td><td>${safe(t.exitReason)}</td></tr>`).join(''):'<tr><td colspan="5" class="muted">لا توجد صفقات مغلقة بعد.</td></tr>'}
-async function refresh(){try{let r=await fetch('/api/market',{cache:'no-store'}),d=await r.json();if(!r.ok)throw Error(d.detail||d.error);document.getElementById('marketRows').innerHTML=d.assets.map(a=>{let b=a.symbol.slice(0,-4);return `<tr><td><b>${b}</b><small>${names[b]} / USDT</small></td><td class="price">${usd(a.price)}</td><td class="${a.changePercent24h>=0?'positive':'negative'}">${fmt(a.changePercent24h)}%</td><td><span class="signal ${a.signal.status==='BUY'?'buy':a.signal.status==='NO_BUY'?'avoid':'wait'}">${status(a.signal.status)}</span></td></tr>`}).join('');document.getElementById('analysisCards').innerHTML=d.assets.map(a=>{let c=a.signal.checks||{};return `<article class="asset-card"><div class="asset-head"><b>${a.symbol.slice(0,-4)}</b><span class="signal ${a.signal.status==='BUY'?'buy':a.signal.status==='NO_BUY'?'avoid':'wait'}">${a.signal.label}</span></div><p>${a.signal.reason}</p><div class="checks"><div><small>15m الاتجاه</small><b>${c.trend15||'—'}</b></div><div><small>5m التأكيد</small><b>${c.confirm5||'—'}</b></div><div><small>3m الدخول</small><b>${c.entry3||'—'}</b></div></div><div class="rsi">RSI — 15m: ${fmt(c.rsi15,1)} · 5m: ${fmt(c.rsi5,1)} · 3m: ${fmt(c.rsi3,1)}</div></article>`}).join('');renderPortfolio(d.portfolio);document.getElementById('connection').textContent='متصل · '+new Date(d.updatedAt).toLocaleTimeString('ar-SA');document.getElementById('error').hidden=true}catch(e){document.getElementById('connection').textContent='غير متصل';document.getElementById('error').hidden=false;document.getElementById('error').textContent='تعذر تحديث البيانات: '+e.message}}
-document.getElementById('runBacktest').onclick=async()=>{let b=document.getElementById('backtestResult'),btn=document.getElementById('runBacktest');btn.disabled=true;b.textContent='جارٍ تحميل البيانات وتشغيل الاختبار...';try{let r=await fetch('/api/backtest?symbol='+document.getElementById('btSymbol').value),d=await r.json();if(!r.ok)throw Error(d.detail||d.error);b.innerHTML=`<div class="stats bt-stats"><article class="card"><span>عدد الصفقات</span><strong>${d.trades}</strong></article><article class="card"><span>نسبة الفوز</span><strong>${fmt(d.winRate,1)}%</strong></article><article class="card"><span>صافي افتراضي</span><strong class="${d.netPnl>=0?'positive':'negative'}">${usd(d.netPnl)}</strong></article><article class="card"><span>Profit Factor</span><strong>${fmt(d.profitFactor,2)}</strong></article></div><p>رابحة: ${d.wins} · خاسرة: ${d.losses}</p><p class="muted">${safe(d.assumptions)}</p>`}catch(e){b.textContent='فشل الاختبار: '+e.message}finally{btn.disabled=false}};
-document.getElementById('resetPaper').onclick=async()=>{if(!confirm('هل تريد حذف سجل المحاكاة وإعادة الرصيد إلى 50 دولاراً؟'))return;let r=await fetch('/api/reset',{method:'POST'}),d=await r.json();renderPortfolio(d.portfolio);document.getElementById('resetMsg').textContent='تمت إعادة ضبط المحفظة التجريبية.'};
-refresh();setInterval(refresh,60000);
+const $ = (id) => document.getElementById(id);
+const money = (v) => Number.isFinite(Number(v)) ? `$${Number(v).toFixed(2)}` : '—';
+const pct = (v) => Number.isFinite(Number(v)) ? `${Number(v).toFixed(2)}%` : '—';
+const fmtPrice = (v) => Number.isFinite(Number(v)) ? Number(v).toPrecision(7).replace(/\.?0+$/, '') : '—';
+const fmtTime = (v) => v ? new Date(v).toLocaleString('ar-SA') : '—';
+let lastAssets = [];
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+function setSigned(el, value) {
+  el.textContent = money(value);
+  el.classList.toggle('negative', Number(value) < 0);
+  el.classList.toggle('positive', Number(value) > 0);
+}
+function renderMarket(assets) {
+  $('marketBody').innerHTML = assets.length ? assets.map(a => {
+    const s = a.signal || {};
+    const cls = s.status === 'BUY' ? 'buy' : s.status === 'NO_BUY' ? 'avoid' : 'wait';
+    return `<tr>
+      <td><strong>${esc(a.symbol)}</strong></td>
+      <td>${fmtPrice(a.price)}</td>
+      <td class="${Number(a.changePercent24h) >= 0 ? 'positive' : 'negative'}">${pct(a.changePercent24h)}</td>
+      <td>${money(a.quoteVolume24h)}</td>
+      <td><span class="signal ${cls}">${esc(s.label || s.status || '—')}</span></td>
+      <td class="reason">${esc(s.reason || '—')}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">لم تصل بيانات صالحة من Binance.</td></tr>';
+}
+function renderPortfolio(p) {
+  $('initialCapital').textContent = money(p.initialCapital);
+  $('cash').textContent = money(p.cash);
+  $('equity').textContent = money(p.equity);
+  setSigned($('realized'), p.realizedPnl);
+  $('openCount').textContent = `${p.openCount} / ${p.maxOpenPositions || 3}`;
+  $('winRate').textContent = pct(p.winRate);
+
+  $('positionsBody').innerHTML = p.positions?.length ? p.positions.map(x => `<tr>
+    <td>${esc(x.symbol)}</td><td>${fmtPrice(x.entryPrice)}</td>
+    <td>${fmtPrice(x.stopPrice)}</td><td>${fmtPrice(x.targetPrice)}</td>
+    <td>${Number(x.quantity).toFixed(6)}</td><td>${money(x.riskUsd)}</td>
+  </tr>`).join('') : '<tr><td colspan="6" class="empty">لا توجد مراكز مفتوحة.</td></tr>';
+
+  $('tradesBody').innerHTML = p.trades?.length ? p.trades.slice(0, 30).map(t => `<tr>
+    <td>${esc(t.symbol)}</td><td>${fmtPrice(t.entryPrice)}</td><td>${fmtPrice(t.exitPrice)}</td>
+    <td class="${Number(t.pnl) >= 0 ? 'positive' : 'negative'}">${money(t.pnl)}</td>
+    <td>${esc(t.exitReason || '—')}</td><td>${fmtTime(t.exitTime)}</td>
+  </tr>`).join('') : '<tr><td colspan="6" class="empty">لا توجد صفقات مغلقة بعد.</td></tr>';
+}
+function populateSymbols(assets) {
+  const select = $('symbolSelect');
+  const previous = select.value;
+  const symbols = [...new Set(assets.map(a => a.symbol))];
+  if (!symbols.length) return;
+  select.innerHTML = symbols.map(s => `<option value="${esc(s)}">${esc(s.replace('USDT', ' / USDT'))}</option>`).join('');
+  select.value = symbols.includes(previous) ? previous : (symbols.includes('BTCUSDT') ? 'BTCUSDT' : symbols[0]);
+}
+async function refreshMarket() {
+  $('refreshBtn').disabled = true;
+  $('marketStatus').textContent = 'جاري جلب بيانات Binance…';
+  try {
+    const r = await fetch('/api/market', { cache: 'no-store' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || data.error || 'فشل جلب السوق');
+    lastAssets = data.assets || [];
+    renderMarket(lastAssets);
+    renderPortfolio(data.portfolio || {});
+    populateSymbols(lastAssets);
+    $('updatedAt').textContent = `آخر تحديث: ${fmtTime(data.updatedAt)}`;
+    $('marketStatus').textContent = `${lastAssets.length} أزواج متاحة`;
+    if (data.errors?.length) $('marketStatus').textContent += ` · تعذر تحميل ${data.errors.length}`;
+  } catch (e) {
+    $('marketStatus').textContent = `خطأ: ${e.message}`;
+  } finally {
+    $('refreshBtn').disabled = false;
+  }
+}
+function renderComparisons(data) {
+  const rows = data.comparisons || [];
+  $('backtestSummary').innerHTML = rows.map(x => `
+    <article class="result-card">
+      <div class="result-title">${esc(x.label)}</div>
+      <div class="result-main ${Number(x.netPnl) >= 0 ? 'positive' : 'negative'}">${money(x.netPnl)}</div>
+      <div class="result-metrics">
+        <span>الصفقات <b>${x.trades}</b></span>
+        <span>الفوز <b>${pct(x.winRate)}</b></span>
+        <span>Profit Factor <b>${x.profitFactor == null ? '—' : Number(x.profitFactor).toFixed(2)}</b></span>
+        <span>Expectancy <b>${money(x.expectancy)}</b></span>
+        <span>Max Drawdown <b>${pct(x.maxDrawdownPercent)}</b></span>
+        <span>متوسط الاحتفاظ <b>${Number(x.avgHoldingMinutes || 0).toFixed(1)} د</b></span>
+      </div>
+    </article>`).join('');
+  const c = data.candleCounts || {};
+  $('diagnostics').innerHTML = `
+    <h3>بيانات الاختبار والتشخيص</h3>
+    <p>الشموع: 1H (${c['1h'] || 0}) · 15m (${c['15m'] || 0}) · 5m (${c['5m'] || 0}) · 3m (${c['3m'] || 0})</p>
+    <p>إشارات مرشحة: ${data.diagnostics?.candidateSignals ?? '—'} · شموع 3m مفحوصة: ${data.diagnostics?.scanned3mCandles ?? '—'}</p>
+    <p>الرفض حسب الفلتر: 1H (${data.diagnostics?.rejected?.h1 ?? 0}) · 15m (${data.diagnostics?.rejected?.m15 ?? 0}) · 5m (${data.diagnostics?.rejected?.m5 ?? 0}) · 3m (${data.diagnostics?.rejected?.m3 ?? 0})</p>
+    <p class="muted">الفترة المشتركة: ${fmtTime(data.sharedPeriod?.start)} — ${fmtTime(data.sharedPeriod?.end)}</p>`;
+  $('limitations').innerHTML = `<strong>حدود الاختبار:</strong><ul>${(data.limitations || []).map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  $('limitations').classList.remove('hidden');
+}
+async function runBacktest() {
+  const symbol = $('symbolSelect').value;
+  $('backtestBtn').disabled = true;
+  $('backtestStatus').textContent = `جاري اختبار ${symbol} على 10,000 شمعة لكل فريم. قد يستغرق ذلك بعض الوقت…`;
+  $('backtestSummary').innerHTML = '';
+  $('diagnostics').innerHTML = '';
+  $('limitations').classList.add('hidden');
+  try {
+    const r = await fetch(`/api/backtest?symbol=${encodeURIComponent(symbol)}`, { cache: 'no-store' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || data.error || 'فشل الاختبار');
+    if (data.version !== 'V5' || !Array.isArray(data.comparisons)) {
+      throw new Error('استجابة الخادم قديمة أو غير متوافقة. تأكد من نشر server-v5.1.js في Railway.');
+    }
+    renderComparisons(data);
+    $('backtestStatus').textContent = `اكتمل الاختبار: ${symbol} · الرسوم ${pct(data.costs?.feeRatePerSide * 100)} لكل جهة · الانزلاق ${pct(data.costs?.slippageRatePerSide * 100)} لكل جهة`;
+  } catch (e) {
+    $('backtestStatus').textContent = `تعذر الاختبار: ${e.message}`;
+  } finally {
+    $('backtestBtn').disabled = false;
+  }
+}
+async function resetPaper() {
+  if (!confirm('هل تريد حذف سجل التداول التجريبي وإعادة رأس المال إلى 50 دولاراً؟')) return;
+  $('resetBtn').disabled = true;
+  try {
+    const r = await fetch('/api/reset', { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'تعذرت إعادة الضبط');
+    renderPortfolio(data.portfolio);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    $('resetBtn').disabled = false;
+  }
+}
+$('refreshBtn').addEventListener('click', refreshMarket);
+$('backtestBtn').addEventListener('click', runBacktest);
+$('resetBtn').addEventListener('click', resetPaper);
+refreshMarket();
+setInterval(refreshMarket, 30000);
